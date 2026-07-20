@@ -1,0 +1,450 @@
+// tokei-agent CLI — read and write commands for the Tokei (tokei.io) v1 REST API.
+// Zero runtime dependencies: Node 22 native fetch + hand-rolled parsing.
+
+import { parseArgs } from "./args.js";
+import { request } from "./http.js";
+import type { FetchLike, HttpMethod } from "./http.js";
+import { createMcpSession } from "./mcp.js";
+
+// Kept in sync with cli/package.json by hand (zero-dep simplicity).
+export const VERSION = "0.2.0";
+
+const DEFAULT_BASE_URL = "https://tokei.io";
+
+export interface Io {
+  env: Record<string, string | undefined>;
+  fetchImpl: FetchLike;
+  stdout: (line: string) => void;
+  stderr: (line: string) => void;
+  // Reads a file for `--data @file.json`. Optional so embedders without a
+  // filesystem can omit it.
+  readFile?: (path: string) => string;
+  // Line stream driving the `mcp` command. Optional so embedders without a
+  // stdin can omit it (the command then reports a usage error).
+  stdin?: AsyncIterable<string>;
+}
+
+interface FlagSpec {
+  // CLI flag name (e.g. "per-page") and the wire query param (e.g. "per_page").
+  name: string;
+  param: string;
+  kind: "int" | "enum" | "string";
+  values?: readonly string[];
+  min?: number;
+  max?: number;
+}
+
+interface BodyFlagSpec {
+  // CLI flag name (e.g. "campaign-url") and the wire body field (e.g. "campaign_url").
+  name: string;
+  field: string;
+  kind: "string" | "int" | "enum" | "list";
+  values?: readonly string[];
+  required?: boolean;
+}
+
+interface CommandSpec {
+  method?: HttpMethod; // default GET
+  // Name of the required positional path parameter, e.g. "contestId".
+  positional?: string;
+  buildPath: (positional: string | undefined) => string;
+  flags: FlagSpec[];
+  bodyFlags?: BodyFlagSpec[];
+  // Accepts --data '<json>' / --data @file.json, merged under individual
+  // body flags (flags win). Passed to the API untouched — its 422
+  // per-field errors are the validation story.
+  acceptsData?: boolean;
+  // Usage error when the merged body has no fields (PATCH needs >= 1).
+  requireBody?: boolean;
+  // Warn on stderr that the returned signing secret is shown only once.
+  warnSecretOnce?: boolean;
+}
+
+const PAGE: FlagSpec = { name: "page", param: "page", kind: "int", min: 1 };
+const PER_PAGE: FlagSpec = { name: "per-page", param: "per_page", kind: "int", min: 1, max: 100 };
+
+// Every path parameter is percent-encoded so ids can never break out of
+// their path segment.
+const enc = encodeURIComponent;
+
+const COMMANDS: Record<string, CommandSpec> = {
+  me: {
+    buildPath: () => "/me",
+    flags: [],
+  },
+  "pages:list": {
+    buildPath: () => "/contests",
+    flags: [
+      { name: "status", param: "status", kind: "enum", values: ["draft", "active", "ended", "paused"] },
+      { name: "mode", param: "mode", kind: "enum", values: ["competition", "gamification", "sharing_only"] },
+      PAGE,
+      PER_PAGE,
+    ],
+  },
+  "pages:get": {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    flags: [],
+  },
+  stats: {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/analytics`,
+    flags: [],
+  },
+  leaderboard: {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/leaderboard`,
+    flags: [PAGE, PER_PAGE],
+  },
+  "entries:list": {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/entries`,
+    flags: [PAGE, PER_PAGE, { name: "email", param: "email", kind: "string" }],
+  },
+  "surveys:list": {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/survey-responses`,
+    flags: [PAGE, PER_PAGE],
+  },
+  "pages:clone": {
+    method: "POST",
+    buildPath: () => "/promotions",
+    flags: [],
+    bodyFlags: [
+      { name: "title", field: "title", kind: "string", required: true },
+      { name: "source", field: "source_promotion_id", kind: "string" },
+      { name: "description", field: "description", kind: "string" },
+      { name: "prize", field: "prize", kind: "string" },
+      { name: "end-date", field: "end_date", kind: "string" },
+      { name: "campaign-url", field: "campaign_url", kind: "string" },
+      { name: "image-url", field: "image_url", kind: "string" },
+      { name: "status", field: "status", kind: "enum", values: ["draft", "active"] },
+      { name: "idempotency-key", field: "idempotency_key", kind: "string" },
+    ],
+    acceptsData: true,
+  },
+  "pages:update": {
+    method: "PATCH",
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    flags: [],
+    bodyFlags: [
+      { name: "title", field: "title", kind: "string" },
+      { name: "description", field: "description", kind: "string" },
+      { name: "start-date", field: "start_date", kind: "string" },
+      { name: "end-date", field: "end_date", kind: "string" },
+    ],
+    acceptsData: true,
+    requireBody: true,
+  },
+  "entries:create": {
+    method: "POST",
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/entries`,
+    flags: [],
+    bodyFlags: [
+      { name: "email", field: "email", kind: "string", required: true },
+      { name: "name", field: "name", kind: "string" },
+      { name: "action-type", field: "action_type", kind: "string" },
+      { name: "points", field: "points", kind: "int" },
+      { name: "value", field: "value", kind: "string" },
+    ],
+    acceptsData: true,
+  },
+  "webhooks:list": {
+    buildPath: () => "/webhooks",
+    flags: [PAGE, PER_PAGE],
+  },
+  "webhooks:create": {
+    method: "POST",
+    buildPath: () => "/webhooks",
+    flags: [],
+    bodyFlags: [
+      { name: "url", field: "url", kind: "string", required: true },
+      { name: "events", field: "events", kind: "list", required: true },
+    ],
+    acceptsData: true,
+    warnSecretOnce: true,
+  },
+  "webhooks:delete": {
+    method: "DELETE",
+    positional: "webhookId",
+    buildPath: (id) => `/webhooks/${enc(id!)}`,
+    flags: [],
+  },
+};
+
+const COMMAND_NAMES = Object.keys(COMMANDS);
+
+class UsageError extends Error {}
+
+function checkKnownFlags(spec: CommandSpec, flags: Record<string, string>): void {
+  const known = new Set(spec.flags.map((f) => f.name));
+  for (const bf of spec.bodyFlags ?? []) known.add(bf.name);
+  if (spec.acceptsData) known.add("data");
+  for (const provided of Object.keys(flags)) {
+    if (!known.has(provided)) {
+      throw new UsageError(`Unknown flag --${provided} for this command`);
+    }
+  }
+}
+
+function buildQuery(spec: CommandSpec, flags: Record<string, string>): Record<string, string> {
+  const query: Record<string, string> = {};
+  for (const flag of spec.flags) {
+    const raw = flags[flag.name];
+    if (raw === undefined) continue;
+
+    if (flag.kind === "int") {
+      if (!/^\d+$/.test(raw)) {
+        throw new UsageError(`--${flag.name} must be an integer`);
+      }
+      const n = Number(raw);
+      if (flag.min !== undefined && n < flag.min) {
+        throw new UsageError(`--${flag.name} must be >= ${flag.min}`);
+      }
+      if (flag.max !== undefined && n > flag.max) {
+        throw new UsageError(`--${flag.name} must be <= ${flag.max}`);
+      }
+      query[flag.param] = String(n);
+    } else if (flag.kind === "enum") {
+      if (!flag.values || !flag.values.includes(raw)) {
+        throw new UsageError(`--${flag.name} must be one of: ${flag.values?.join(", ")}`);
+      }
+      query[flag.param] = raw;
+    } else {
+      if (raw === "") {
+        throw new UsageError(`--${flag.name} requires a value`);
+      }
+      query[flag.param] = raw;
+    }
+  }
+  return query;
+}
+
+function parseDataFlag(raw: string, io: Io): Record<string, unknown> {
+  if (raw === "") {
+    throw new UsageError("--data requires a value: a JSON object or @file.json");
+  }
+  let text = raw;
+  if (raw.startsWith("@")) {
+    const path = raw.slice(1);
+    if (!io.readFile) {
+      throw new UsageError("--data @file is not supported in this environment");
+    }
+    try {
+      text = io.readFile(path);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new UsageError(`--data: could not read ${path}: ${message}`);
+    }
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new UsageError("--data must be valid JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new UsageError("--data must be a JSON object");
+  }
+  return { ...(parsed as Record<string, unknown>) };
+}
+
+function buildBody(
+  spec: CommandSpec,
+  flags: Record<string, string>,
+  io: Io,
+): Record<string, unknown> | undefined {
+  if (!spec.bodyFlags && !spec.acceptsData) return undefined;
+
+  // --data is the base; individual flags are applied on top and win.
+  const body: Record<string, unknown> =
+    spec.acceptsData && flags.data !== undefined ? parseDataFlag(flags.data, io) : {};
+
+  for (const bf of spec.bodyFlags ?? []) {
+    const raw = flags[bf.name];
+    if (raw === undefined) continue;
+    if (raw === "") {
+      throw new UsageError(`--${bf.name} requires a value`);
+    }
+    if (bf.kind === "int") {
+      if (!/^\d+$/.test(raw)) {
+        throw new UsageError(`--${bf.name} must be an integer`);
+      }
+      body[bf.field] = Number(raw);
+    } else if (bf.kind === "enum") {
+      if (!bf.values || !bf.values.includes(raw)) {
+        throw new UsageError(`--${bf.name} must be one of: ${bf.values?.join(", ")}`);
+      }
+      body[bf.field] = raw;
+    } else if (bf.kind === "list") {
+      const items = raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (items.length === 0) {
+        throw new UsageError(`--${bf.name} requires a value`);
+      }
+      body[bf.field] = items;
+    } else {
+      body[bf.field] = raw;
+    }
+  }
+
+  for (const bf of spec.bodyFlags ?? []) {
+    if (bf.required && body[bf.field] === undefined) {
+      throw new UsageError(`--${bf.name} is required (or provide "${bf.field}" via --data)`);
+    }
+  }
+  if (spec.requireBody && Object.keys(body).length === 0) {
+    throw new UsageError("Provide at least one field to update, via flags or --data");
+  }
+  return body;
+}
+
+const HELP = `tokei-agent — control your Tokei (tokei.io) pre-launch campaigns from AI agents and the CLI.
+
+Usage:
+  tokei-agent <command> [flags]
+
+Commands (read):
+  me                          Show the authenticated account / API key
+  pages:list                  List promotions
+                                --status draft|active|ended|paused
+                                --mode competition|gamification|sharing_only
+                                --page <n>  --per-page <1-100>
+  pages:get <contestId>       Get a single promotion
+  stats <contestId>           Analytics for a promotion
+  leaderboard <contestId>     Leaderboard   --page <n>  --per-page <1-100>
+  entries:list <contestId>    List entries  --page <n>  --per-page <1-100>  --email <addr>
+  surveys:list <contestId>    Survey responses  --page <n>  --per-page <1-100>
+  webhooks:list               List webhook subscriptions  --page <n>  --per-page <1-100>
+
+Commands (write — need a read+write API key):
+  pages:clone                 Create a promotion by cloning one you own; omit
+                              --source to clone the platform starter template.
+                              Rate limited to 20 clones per day per account.
+                                --title <t> (required)  --source <promotionId>
+                                --description <d>  --prize <name>  --end-date <iso>
+                                --campaign-url <url>  --image-url <url>
+                                --status draft|active  --idempotency-key <k>  --data
+  pages:update <contestId>    Update a promotion. Simple fields via flags; prizes,
+                              reward_thresholds (or a full body) via --data.
+                                --title <t>  --description <d>
+                                --start-date <iso>  --end-date <iso>  --data
+  entries:create <contestId>  Add an entry
+                                --email <addr> (required)  --name <n>
+                                --action-type <t>  --points <n>  --value <v>  --data
+  webhooks:create             Create a webhook subscription. The response shows the
+                              whsec_ signing secret ONCE — it cannot be retrieved
+                              again, so store it immediately.
+                                --url <https-url> (required)
+                                --events <e1,e2> (required, e.g. entry.created)  --data
+  webhooks:delete <webhookId> Delete a webhook subscription
+
+Commands (other):
+  mcp                         Run the MCP stdio server — every command above
+                              exposed as an MCP tool (for Claude Code, Claude
+                              Desktop, and other MCP clients)
+
+  --help, help                Show this help
+  --version, -v               Show the version
+
+--data '<json>' or --data @file.json supplies the request body as raw JSON,
+merged under any field flags (flags win). It is sent to the API untouched;
+invalid bodies come back as 422 responses with per-field errors.
+
+Environment:
+  TOKEI_API_KEY   Required. API key sent as "Authorization: Bearer <key>".
+                  Create one at https://tokei.io (Dashboard, Settings, API Keys).
+  TOKEI_API_URL   Optional. Base URL override (default https://tokei.io).
+
+Output: JSON on stdout, augmented with a top-level "rate_limit" object.
+Exit codes: 0 success, 1 API/network error, 2 usage error.`;
+
+function usageError(io: Io, message: string): number {
+  io.stderr(JSON.stringify({ ok: false, error: { type: "usage_error", message } }, null, 2));
+  return 2;
+}
+
+export async function main(argv: string[], io: Io): Promise<number> {
+  const { command, positionals, flags } = parseArgs(argv);
+
+  if ("help" in flags || command === "help") {
+    io.stdout(HELP);
+    return 0;
+  }
+  if ("version" in flags || "v" in flags) {
+    io.stdout(VERSION);
+    return 0;
+  }
+
+  if (command === undefined) {
+    return usageError(io, `No command given. Valid commands: ${COMMAND_NAMES.join(", ")}, mcp`);
+  }
+
+  if (command === "mcp") {
+    if (!io.stdin) {
+      return usageError(io, "mcp needs a stdin line stream (run it via the tokei-agent binary)");
+    }
+    const session = createMcpSession(io);
+    for await (const line of io.stdin) {
+      if (line.trim() === "") continue;
+      const reply = await session.handleLine(line);
+      if (reply !== undefined) io.stdout(reply);
+    }
+    return 0;
+  }
+
+  const spec = COMMANDS[command];
+  if (!spec) {
+    return usageError(io, `Unknown command "${command}". Valid commands: ${COMMAND_NAMES.join(", ")}`);
+  }
+
+  let positional: string | undefined;
+  if (spec.positional) {
+    positional = positionals[0];
+    if (positional === undefined) {
+      return usageError(io, `${command} requires a <${spec.positional}> argument`);
+    }
+  }
+
+  let query: Record<string, string>;
+  let body: Record<string, unknown> | undefined;
+  try {
+    checkKnownFlags(spec, flags);
+    query = buildQuery(spec, flags);
+    body = buildBody(spec, flags, io);
+  } catch (err) {
+    if (err instanceof UsageError) return usageError(io, err.message);
+    throw err;
+  }
+
+  const apiKey = io.env.TOKEI_API_KEY;
+  if (!apiKey) {
+    return usageError(io, "TOKEI_API_KEY is not set. Create a key at https://tokei.io and export it.");
+  }
+
+  const baseUrl = io.env.TOKEI_API_URL || DEFAULT_BASE_URL;
+
+  const { payload, exitCode } = await request(
+    { baseUrl, apiKey, path: spec.buildPath(positional), query, method: spec.method, body },
+    io.fetchImpl,
+  );
+
+  io.stdout(JSON.stringify(payload, null, 2));
+
+  if (spec.warnSecretOnce && exitCode === 0) {
+    const data = (payload as { data?: unknown }).data;
+    const secret =
+      data !== null && typeof data === "object" ? (data as { secret?: unknown }).secret : undefined;
+    if (typeof secret === "string" && secret.startsWith("whsec_")) {
+      io.stderr(
+        "Warning: the whsec_ signing secret in this response is shown only once and cannot be retrieved again. Store it securely now.",
+      );
+    }
+  }
+
+  return exitCode;
+}
