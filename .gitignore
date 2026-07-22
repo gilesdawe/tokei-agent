@@ -1,3 +1,5 @@
 node_modules/
 dist/
 *.tgz
+*.tar.gz
+mcp-publisher.exe

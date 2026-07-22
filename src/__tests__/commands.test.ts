@@ -115,6 +115,15 @@ describe("main — command routing", () => {
     expect(lastUrl(h).pathname).toBe("/api/v1/contests/c-1/survey-responses");
   });
 
+  it("templates:list -> GET /templates", async () => {
+    const h = harness();
+    const code = await main(["templates:list"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/templates");
+    expect(h.calls[0].init.method).toBe("GET");
+  });
+
   it("honours the TOKEI_API_URL override", async () => {
     const h = harness({ env: { TOKEI_API_KEY: "k", TOKEI_API_URL: "http://127.0.0.1:3000" } });
     await main(["me"], h.io);
@@ -261,6 +270,20 @@ describe("main — write commands", () => {
     });
   });
 
+  it("pages:clone --template <slug> -> body has template, not source_promotion_id", async () => {
+    const h = harness();
+    const code = await main(
+      ["pages:clone", "--title", "From Template", "--template", "product-hunt"],
+      h.io,
+    );
+    expect(code).toBe(0);
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      title: "From Template",
+      template: "product-hunt",
+    });
+  });
+
   it("pages:clone missing --title (no --data) -> usage error, exit 2, no call", async () => {
     const h = harness();
     const code = await main(["pages:clone", "--source", "src-1"], h.io);
@@ -309,6 +332,133 @@ describe("main — write commands", () => {
   it("pages:update <contestId> with no flags and no --data -> usage error, exit 2, no call", async () => {
     const h = harness();
     const code = await main(["pages:update", "c-1"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("pages:update --template/--dark-mode/--primary-color/--card-width -> body with those fields", async () => {
+    const h = harness();
+    const code = await main(
+      [
+        "pages:update",
+        "c-1",
+        "--template",
+        "showcase",
+        "--dark-mode",
+        "true",
+        "--primary-color",
+        "#7d78c6",
+        "--card-width",
+        "wide",
+      ],
+      h.io,
+    );
+    expect(code).toBe(0);
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      template: "showcase",
+      dark_mode_enabled: true,
+      primary_color: "#7d78c6",
+      card_width: "wide",
+    });
+  });
+
+  it("pages:update --dark-mode true -> dark_mode_enabled is a real boolean true", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--dark-mode", "true"], h.io);
+    expect(code).toBe(0);
+    const body = JSON.parse(h.calls[0].init.body!);
+    expect(body.dark_mode_enabled).toBe(true);
+    expect(typeof body.dark_mode_enabled).toBe("boolean");
+  });
+
+  it("pages:update --dark-mode false -> dark_mode_enabled is a real boolean false", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--dark-mode", "false"], h.io);
+    expect(code).toBe(0);
+    const body = JSON.parse(h.calls[0].init.body!);
+    expect(body.dark_mode_enabled).toBe(false);
+    expect(typeof body.dark_mode_enabled).toBe("boolean");
+  });
+
+  it("pages:update --dark-mode maybe -> usage error, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--dark-mode", "maybe"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("pages:update --template bogus -> usage error, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--template", "bogus"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("pages:update --card-width bogus -> usage error, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--card-width", "bogus"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("pages:update --card-width accepts the raw Tailwind class names too", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--card-width", "max-w-3xl"], h.io);
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ card_width: "max-w-3xl" });
+  });
+
+  it("pages:update --primary-color passes the raw string through with no client-side format validation", async () => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", "--primary-color", "not-a-hex-value"], h.io);
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ primary_color: "not-a-hex-value" });
+  });
+
+  it('pages:publish <contestId> -> PATCH /api/v1/contests/:id with {"status":"active"}', async () => {
+    const h = harness();
+    const code = await main(["pages:publish", "c-1"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.pathname).toBe("/api/v1/contests/c-1");
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "active" });
+  });
+
+  it("pages:publish with no positional -> usage error, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:publish"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it('pages:unpublish <contestId> -> PATCH /api/v1/contests/:id with {"status":"draft"}', async () => {
+    const h = harness();
+    const code = await main(["pages:unpublish", "c-1"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.pathname).toBe("/api/v1/contests/c-1");
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "draft" });
+  });
+
+  it("pages:unpublish with no positional -> usage error, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:unpublish"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("pages:publish rejects an unknown flag, exit 2, no call", async () => {
+    const h = harness();
+    const code = await main(["pages:publish", "c-1", "--bogus", "x"], h.io);
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
     expect(h.calls).toEqual([]);
@@ -465,6 +615,37 @@ describe("main — write commands", () => {
     expect(text).toContain("20 clones");
     expect(text).toContain("cannot be retrieved");
   });
+
+  it("--help mentions templates:list and the pages:clone --template flag", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("templates:list");
+    expect(text).toContain("--template");
+    expect(text).toContain("--source");
+  });
+
+  it("--help mentions the pages:update appearance flags, including narrow|medium|wide for --card-width", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("--template");
+    expect(text).toContain("--dark-mode");
+    expect(text).toContain("--primary-color");
+    expect(text).toContain("--card-width narrow|medium|wide");
+  });
+
+  it("--help mentions pages:publish and pages:unpublish, and the --data end_date ergonomic path", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("pages:publish");
+    expect(text).toContain("pages:unpublish");
+    expect(text).toContain("end_date");
+  });
 });
 
 describe("main — --data handling", () => {
@@ -547,6 +728,46 @@ describe("main — --data handling", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
     expect(h.calls).toEqual([]);
+  });
+
+  it("pages:publish --data adds end_date without clobbering the fixed status (the ergonomic one-call publish path)", async () => {
+    const h = harness();
+    const code = await main(
+      ["pages:publish", "c-1", "--data", '{"end_date":"2027-01-01T00:00:00Z"}'],
+      h.io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      status: "active",
+      end_date: "2027-01-01T00:00:00Z",
+    });
+  });
+
+  it("pages:unpublish --data merges extra fields under the fixed status", async () => {
+    const h = harness();
+    const code = await main(
+      ["pages:unpublish", "c-1", "--data", '{"description":"paused for now"}'],
+      h.io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      status: "draft",
+      description: "paused for now",
+    });
+  });
+
+  it("pages:publish with no --data and no flags still sends the fixed body (requireBody is satisfied)", async () => {
+    const h = harness();
+    const code = await main(["pages:publish", "c-1"], h.io);
+    expect(code).toBe(0);
+    expect(h.calls.length).toBe(1);
+  });
+
+  it("pages:publish --data status override wins over the fixed status (documented precedence: data over fixed)", async () => {
+    const h = harness();
+    const code = await main(["pages:publish", "c-1", "--data", '{"status":"draft"}'], h.io);
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "draft" });
   });
 });
 

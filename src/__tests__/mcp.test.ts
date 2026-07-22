@@ -148,7 +148,7 @@ describe("createMcpSession — lifecycle / protocol", () => {
 });
 
 describe("createMcpSession — tools/list", () => {
-  it("lists exactly the 13 tools", async () => {
+  it("lists exactly the 16 tools", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
     const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -162,8 +162,11 @@ describe("createMcpSession — tools/list", () => {
         "leaderboard",
         "entries_list",
         "surveys_list",
+        "templates_list",
         "pages_clone",
         "pages_update",
+        "pages_publish",
+        "pages_unpublish",
         "entries_create",
         "webhooks_list",
         "webhooks_create",
@@ -183,8 +186,49 @@ describe("createMcpSession — tools/list", () => {
     expect(byName("pages_clone").inputSchema.required).toEqual(["title"]);
     expect(byName("webhooks_create").inputSchema.required).toEqual(["url", "events"]);
     expect(byName("entries_create").inputSchema.required).toEqual(["contest_id", "email"]);
+    expect(byName("pages_publish").inputSchema.required).toEqual(["contest_id"]);
+    expect(byName("pages_unpublish").inputSchema.required).toEqual(["contest_id"]);
     const meRequired = byName("me").inputSchema.required;
     expect(meRequired === undefined || meRequired.length === 0).toBe(true);
+    const templatesListRequired = byName("templates_list").inputSchema.required;
+    expect(templatesListRequired === undefined || templatesListRequired.length === 0).toBe(true);
+  });
+
+  it("pages_clone advertises a template input (alternative to source_promotion_id)", () => {
+    const tool = TOOLS.find((t) => t.name === "pages_clone")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+    expect(props.template).toBeDefined();
+    expect(props.template.type).toBe("string");
+    expect(typeof props.template.description).toBe("string");
+    // title is still the only required field — template is optional.
+    expect(tool.inputSchema.required).toEqual(["title"]);
+  });
+
+  it("pages_update advertises template, dark_mode_enabled, primary_color, and card_width", () => {
+    const tool = TOOLS.find((t) => t.name === "pages_update")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    expect(props.template).toBeDefined();
+    expect(props.template.enum).toEqual(["basic-new", "showcase", "future"]);
+
+    expect(props.dark_mode_enabled).toBeDefined();
+    expect(props.dark_mode_enabled.type).toBe("boolean");
+
+    expect(props.primary_color).toBeDefined();
+    expect(typeof props.primary_color.description).toBe("string");
+
+    expect(props.card_width).toBeDefined();
+    expect(props.card_width.enum).toEqual([
+      "narrow",
+      "medium",
+      "wide",
+      "max-w-2xl",
+      "max-w-3xl",
+      "max-w-4xl",
+    ]);
+
+    // contest_id stays the only required field — the new fields are optional.
+    expect(tool.inputSchema.required).toEqual(["contest_id"]);
   });
 });
 
@@ -252,6 +296,42 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     expect(url.searchParams.get("per_page")).toBe("50");
   });
 
+  it("templates_list -> GET /templates, no query, no body", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "templates_list", arguments: {} },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/templates");
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(h.calls[0].init.body).toBeUndefined();
+  });
+
+  it("pages_clone with a template argument POSTs {title, template}", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_clone",
+        arguments: { title: "From Template", template: "product-hunt" },
+      },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/promotions");
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      title: "From Template",
+      template: "product-hunt",
+    });
+  });
+
   it("pages_update PATCHes body without the path param", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
@@ -266,6 +346,85 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     expect(h.calls[0].init.method).toBe("PATCH");
     expect(JSON.parse(h.calls[0].init.body!)).toEqual({ title: "T", end_date: null });
     expect(h.calls[0].init.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("pages_update passes template/dark_mode_enabled/primary_color/card_width through to the body", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_update",
+        arguments: {
+          contest_id: "c1",
+          template: "showcase",
+          dark_mode_enabled: true,
+          primary_color: "#7d78c6",
+          card_width: "wide",
+        },
+      },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1");
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      template: "showcase",
+      dark_mode_enabled: true,
+      primary_color: "#7d78c6",
+      card_width: "wide",
+    });
+  });
+
+  it('pages_publish PATCHes {"status":"active"}', async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "pages_publish", arguments: { contest_id: "c1" } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1");
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "active" });
+  });
+
+  it("pages_publish merges an end_date argument without clobbering the fixed status", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_publish",
+        arguments: { contest_id: "c1", end_date: "2027-01-01T00:00:00Z" },
+      },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      status: "active",
+      end_date: "2027-01-01T00:00:00Z",
+    });
+  });
+
+  it('pages_unpublish PATCHes {"status":"draft"}', async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "pages_unpublish", arguments: { contest_id: "c1" } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1");
+    expect(h.calls[0].init.method).toBe("PATCH");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "draft" });
   });
 
   it("entries_create POSTs the body", async () => {
@@ -418,7 +577,7 @@ describe("createMcpSession — tools/call errors", () => {
     });
     expect(initRes.result.protocolVersion).toBe("2025-06-18");
     const listRes = await rpc(session, { jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(listRes.result.tools.length).toBe(13);
+    expect(listRes.result.tools.length).toBe(16);
   });
 });
 

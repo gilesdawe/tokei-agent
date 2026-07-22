@@ -38,7 +38,7 @@ interface BodyFlagSpec {
   // CLI flag name (e.g. "campaign-url") and the wire body field (e.g. "campaign_url").
   name: string;
   field: string;
-  kind: "string" | "int" | "enum" | "list";
+  kind: "string" | "int" | "enum" | "list" | "bool";
   values?: readonly string[];
   required?: boolean;
 }
@@ -54,6 +54,11 @@ interface CommandSpec {
   // body flags (flags win). Passed to the API untouched — its 422
   // per-field errors are the validation story.
   acceptsData?: boolean;
+  // A fixed set of body fields sent on every invocation (e.g. the sugar
+  // commands pages:publish/pages:unpublish send {status: "active"/"draft"}).
+  // Lowest precedence: --data is merged on top of it, and individual body
+  // flags win over both.
+  fixedBody?: Record<string, unknown>;
   // Usage error when the merged body has no fields (PATCH needs >= 1).
   requireBody?: boolean;
   // Warn on stderr that the returned signing secret is shown only once.
@@ -106,6 +111,10 @@ const COMMANDS: Record<string, CommandSpec> = {
     buildPath: (id) => `/contests/${enc(id!)}/survey-responses`,
     flags: [PAGE, PER_PAGE],
   },
+  "templates:list": {
+    buildPath: () => "/templates",
+    flags: [],
+  },
   "pages:clone": {
     method: "POST",
     buildPath: () => "/promotions",
@@ -113,6 +122,7 @@ const COMMANDS: Record<string, CommandSpec> = {
     bodyFlags: [
       { name: "title", field: "title", kind: "string", required: true },
       { name: "source", field: "source_promotion_id", kind: "string" },
+      { name: "template", field: "template", kind: "string" },
       { name: "description", field: "description", kind: "string" },
       { name: "prize", field: "prize", kind: "string" },
       { name: "end-date", field: "end_date", kind: "string" },
@@ -133,7 +143,34 @@ const COMMANDS: Record<string, CommandSpec> = {
       { name: "description", field: "description", kind: "string" },
       { name: "start-date", field: "start_date", kind: "string" },
       { name: "end-date", field: "end_date", kind: "string" },
+      { name: "template", field: "template", kind: "enum", values: ["basic-new", "showcase", "future"] },
+      { name: "dark-mode", field: "dark_mode_enabled", kind: "bool" },
+      { name: "primary-color", field: "primary_color", kind: "string" },
+      {
+        name: "card-width",
+        field: "card_width",
+        kind: "enum",
+        values: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
+      },
     ],
+    acceptsData: true,
+    requireBody: true,
+  },
+  "pages:publish": {
+    method: "PATCH",
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    flags: [],
+    fixedBody: { status: "active" },
+    acceptsData: true,
+    requireBody: true,
+  },
+  "pages:unpublish": {
+    method: "PATCH",
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    flags: [],
+    fixedBody: { status: "draft" },
     acceptsData: true,
     requireBody: true,
   },
@@ -256,11 +293,14 @@ function buildBody(
   flags: Record<string, string>,
   io: Io,
 ): Record<string, unknown> | undefined {
-  if (!spec.bodyFlags && !spec.acceptsData) return undefined;
+  if (!spec.bodyFlags && !spec.acceptsData && !spec.fixedBody) return undefined;
 
-  // --data is the base; individual flags are applied on top and win.
-  const body: Record<string, unknown> =
-    spec.acceptsData && flags.data !== undefined ? parseDataFlag(flags.data, io) : {};
+  // fixedBody is the base layer; --data is merged on top of it (and wins on
+  // conflict); individual flags are applied last and win over both.
+  const body: Record<string, unknown> = { ...(spec.fixedBody ?? {}) };
+  if (spec.acceptsData && flags.data !== undefined) {
+    Object.assign(body, parseDataFlag(flags.data, io));
+  }
 
   for (const bf of spec.bodyFlags ?? []) {
     const raw = flags[bf.name];
@@ -278,6 +318,11 @@ function buildBody(
         throw new UsageError(`--${bf.name} must be one of: ${bf.values?.join(", ")}`);
       }
       body[bf.field] = raw;
+    } else if (bf.kind === "bool") {
+      if (raw !== "true" && raw !== "false") {
+        throw new UsageError(`--${bf.name} must be "true" or "false"`);
+      }
+      body[bf.field] = raw === "true";
     } else if (bf.kind === "list") {
       const items = raw
         .split(",")
@@ -320,19 +365,36 @@ Commands (read):
   entries:list <contestId>    List entries  --page <n>  --per-page <1-100>  --email <addr>
   surveys:list <contestId>    Survey responses  --page <n>  --per-page <1-100>
   webhooks:list               List webhook subscriptions  --page <n>  --per-page <1-100>
+  templates:list              List the platform's named starting points (id,
+                              slug, name, skin, entry_method_count) — clone one
+                              by slug with pages:clone --template <slug>.
 
 Commands (write — need a read+write API key):
   pages:clone                 Create a promotion by cloning one you own; omit
-                              --source to clone the platform starter template.
-                              Rate limited to 20 clones per day per account.
+                              --source and --template to clone the platform
+                              starter template. Rate limited to 20 clones per
+                              day per account.
                                 --title <t> (required)  --source <promotionId>
+                                --template <slug> (alternative to --source; get
+                                slugs from templates:list; --source + --template
+                                together is a 422)
                                 --description <d>  --prize <name>  --end-date <iso>
                                 --campaign-url <url>  --image-url <url>
                                 --status draft|active  --idempotency-key <k>  --data
   pages:update <contestId>    Update a promotion. Simple fields via flags; prizes,
                               reward_thresholds (or a full body) via --data.
                                 --title <t>  --description <d>
-                                --start-date <iso>  --end-date <iso>  --data
+                                --start-date <iso>  --end-date <iso>
+                                --template basic-new|showcase|future
+                                --dark-mode true|false  --primary-color <hex>
+                                --card-width narrow|medium|wide  --data
+  pages:publish <contestId>   Publish a page (status -> active). Requires an
+                              end_date in the future, already stored or sent
+                              in --data, e.g. --data '{"end_date":"..."}'
+                              to publish and set the deadline in one call.
+  pages:unpublish <contestId> Unpublish a page (status -> draft). Entries are
+                              untouched and new ones are blocked, but the
+                              page still renders publicly at its URL.
   entries:create <contestId>  Add an entry
                                 --email <addr> (required)  --name <n>
                                 --action-type <t>  --points <n>  --value <v>  --data

@@ -37,6 +37,10 @@ interface ToolSpec {
   queryParams?: string[];
   // Remaining arguments (minus pathParam) are sent as the JSON body.
   hasBody?: boolean;
+  // A fixed set of body fields sent on every call (e.g. pages_publish always
+  // sends {status: "active"}); the tool call's own arguments are merged on
+  // top and win on conflict.
+  fixedBody?: Record<string, unknown>;
   // Append a one-time-secret notice when the response contains a whsec_ secret.
   warnSecretOnce?: boolean;
 }
@@ -155,9 +159,18 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     def: {
+      name: "templates_list",
+      description:
+        "List the platform's named starting points: id, slug, name, skin (page layout), and entry_method_count. Same list for every key. Clone one by slug with pages_clone's template argument.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    buildPath: () => "/templates",
+  },
+  {
+    def: {
       name: "pages_clone",
       description:
-        "Create a page by cloning one you own (source_promotion_id) or the platform starter template (omit it). Template, theme, and entry methods copy verbatim from the source. Capped at 20 API-created pages per account per UTC day (429). Needs a read+write key.",
+        "Create a page by cloning one you own (source_promotion_id), a named platform template (template — list slugs with templates_list), or the platform starter template (omit both). Sending both source_promotion_id and template is a 422. Template, theme, and entry methods copy verbatim from the source. Capped at 20 API-created pages per account per UTC day (429). Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -169,6 +182,11 @@ const TOOL_SPECS: ToolSpec[] = [
           source_promotion_id: {
             type: "string",
             description: "Page to clone; must be owned by your account (404 otherwise).",
+          },
+          template: {
+            type: "string",
+            description:
+              "Clone a named platform template by slug instead (from templates_list). Alternative to source_promotion_id, not combinable with it (422). A slug matching no template is a 404.",
           },
           description: { type: "string", maxLength: 2000 },
           prize: {
@@ -247,6 +265,21 @@ const TOOL_SPECS: ToolSpec[] = [
               "Replaces reward tiers wholesale. Items: {id, points, rewardType, rewardDescription, isEnabled, rewardDetails?}.",
             items: { type: "object" },
           },
+          template: {
+            type: "string",
+            enum: ["basic-new", "showcase", "future"],
+            description: "Page skin/layout template.",
+          },
+          dark_mode_enabled: { type: "boolean", description: "Enable dark mode on the public page." },
+          primary_color: {
+            type: ["string", "null"],
+            description: "Hex colour, e.g. #7d78c6. null resets to the template default.",
+          },
+          card_width: {
+            type: "string",
+            enum: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
+            description: "Content column width. Friendly names map to Tailwind max-w classes server-side.",
+          },
         },
         required: ["contest_id"],
       },
@@ -255,6 +288,47 @@ const TOOL_SPECS: ToolSpec[] = [
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}`,
     hasBody: true,
+  },
+  {
+    def: {
+      name: "pages_publish",
+      description:
+        "Publish a page (status -> active), making it live at its public_url. Requires an end_date in the future — either already stored on the page or supplied here — otherwise returns 422 VALIDATION_ERROR. Re-publishing an already-active page is a no-op and skips that check. Needs a read+write key.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          contest_id: CONTEST_ID,
+          end_date: {
+            type: "string",
+            description:
+              "ISO 8601 datetime in the future. Required in this same call if the page has no future end_date already.",
+          },
+        },
+        required: ["contest_id"],
+      },
+    },
+    method: "PATCH",
+    pathParam: "contest_id",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    hasBody: true,
+    fixedBody: { status: "active" },
+  },
+  {
+    def: {
+      name: "pages_unpublish",
+      description:
+        "Unpublish a page (status -> draft): blocks new entries only — existing entries and entrants are untouched, nothing is deleted. IMPORTANT: a draft page still renders publicly at its URL; unpublishing does not hide it from anyone with the link, it only stops new signups. Tell your user this before they rely on it to take a page down. Needs a read+write key.",
+      inputSchema: {
+        type: "object",
+        properties: { contest_id: CONTEST_ID },
+        required: ["contest_id"],
+      },
+    },
+    method: "PATCH",
+    pathParam: "contest_id",
+    buildPath: (id) => `/contests/${enc(id!)}`,
+    hasBody: true,
+    fixedBody: { status: "draft" },
   },
   {
     def: {
@@ -406,7 +480,8 @@ async function callTool(
 
   let body: Record<string, unknown> | undefined;
   if (spec.hasBody) {
-    body = { ...args };
+    // fixedBody is the base layer; the caller's own arguments win on conflict.
+    body = { ...(spec.fixedBody ?? {}), ...args };
     if (spec.pathParam !== undefined) delete body[spec.pathParam];
   }
 
