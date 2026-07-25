@@ -7,7 +7,7 @@ import type { FetchLike, HttpMethod } from "./http.js";
 import { createMcpSession } from "./mcp.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.2";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 

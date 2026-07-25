@@ -239,14 +239,14 @@ describe("main — help and version", () => {
     const h = harness();
     const code = await main(["--version"], h.io);
     expect(code).toBe(0);
-    expect(h.out.join("\n").trim()).toBe("0.2.0");
+    expect(h.out.join("\n").trim()).toBe("0.2.2");
   });
 
   it("-v prints the version, exit 0", async () => {
     const h = harness();
     const code = await main(["-v"], h.io);
     expect(code).toBe(0);
-    expect(h.out.join("\n").trim()).toBe("0.2.0");
+    expect(h.out.join("\n").trim()).toBe("0.2.2");
   });
 });
 

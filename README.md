@@ -32,6 +32,8 @@ tokei-agent stats <contestId>        # analytics for one page
 
 Every command prints JSON to stdout with a top-level `rate_limit` object. Exit codes: `0` success, `1` API/network error, `2` usage error (JSON on stderr).
 
+> **Known issue — exit codes on Node 24 / Windows.** The CLI can print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` reads `-1073740791` / `0xC0000409` on success and failure alike). Judge a run by the JSON on stdout, not by the exit status.
+
 ## Commands
 
 Read (any key):

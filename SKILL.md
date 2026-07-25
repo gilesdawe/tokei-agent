@@ -38,6 +38,8 @@ Keys have a scope: **read-only** or **read+write**. Write commands need a read+w
 - Exit code `1` — API or network error. The API's JSON error body (same envelope, with `rate_limit`) is still printed on stdout; pure network failures print `{"ok": false, "error": {"type": "network_error", "message": ...}}`.
 - Exit code `2` — usage error (bad flags, missing arguments, missing `TOKEI_API_KEY`). Printed as JSON on **stderr**: `{"ok": false, "error": {"type": "usage_error", "message": ...}}`. Nothing was sent to the API.
 
+> **Known issue — exit codes on Node 24 / Windows.** The CLI can print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` reads `-1073740791` / `0xC0000409` on success and failure alike). Judge a run by the JSON on stdout, not by the exit status.
+
 ## Commands (read — any key)
 
 **`me`** — verify the key, see plan and API usage.
@@ -101,6 +103,8 @@ tokei-agent surveys:list 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --page 2
 tokei-agent templates:list
 ```
 
+Example response — illustrative only: the live menu depends on which templates the platform has published. Call `templates:list` and use the slugs it returns; never hardcode one.
+
 ```json
 {
   "success": true,
@@ -126,6 +130,12 @@ tokei-agent templates:list
 
 `skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug.
 
+What the skins look like — use this to match the user's reference point:
+
+- `basic-new` ("Basic") — the classic giveaway card: entry actions in a clean vertical list, soft pastel styling. This is the format popularized by Gleam — when a user asks for a Gleam-style (or KickoffLabs-style) campaign, this is the closest match. The platform default.
+- `showcase` — a dynamic two-column layout with warm colors and platform-styled buttons. Product-forward — the natural fit for a Product Hunt-style launch page.
+- `future` — a dark, immersive game-style skin for bold, high-impact pages (gaming and tech audiences).
+
 ## Commands (write — need a read+write key)
 
 **`pages:clone`** — create a page by cloning one you own (`--source <promotionId>`), a named platform template by slug (`--template <slug>` — get slugs from `templates:list`), or omit both to clone the platform starter template. `--template` and `--source` are **alternatives, not combinable** — sending both is `422`; a `--template` slug matching no template is `404`. Template, theme, and entry methods copy verbatim from the source — keep one polished master page per shape and clone it. Capped at **20 API-created pages per account per UTC day** (429 with `Retry-After`). Flags: `--title` (required), `--source`, `--template`, `--description`, `--prize`, `--end-date <iso>`, `--campaign-url`, `--image-url`, `--status draft|active`, `--idempotency-key`, `--data`.
@@ -149,7 +159,7 @@ tokei-agent pages:clone --title "Spring Launch Waitlist" --template product-hunt
 
 **`pages:update <contestId>`** — PATCH a page. Simple fields via flags: `--title`, `--description`, `--start-date <iso>`, `--end-date <iso>`, `--template basic-new|showcase|future`, `--dark-mode true|false`, `--primary-color "#7d78c6"`, `--card-width narrow|medium|wide`. Prizes, reward tiers, nulls, or a full body via `--data`. At least one field required; unknown fields are rejected (422). `prizes` (max 20) and `reward_thresholds` (max 50) each **replace the existing list wholesale** — read the current lists with `pages:get` first, modify, and send the complete list back. A future `start_date` pauses new entries until then; setting `end_date` recomputes `days_left` — but a page whose winners have already been drawn rejects any `end_date` change with `409 WINNERS_ALREADY_SELECTED` (clearing it via `--data '{"end_date": null}'` is still allowed). `--title` sets the visible page headline (and the dashboard name), and `--description` accepts basic rich-text HTML which is sanitized on write, so unsupported tags come back stripped.
 
-Appearance flags: `--template` is the page skin (`basic-new`, `showcase` or `future`), stored verbatim as `settings.template`. `--dark-mode` is a plain creator-side toggle (column `dark_mode_enabled`) — there is no visitor `prefers-color-scheme` behavior, so this is the only thing that controls it. `--primary-color` must be a hex colour only (3, 4, 6 or 8 digits, e.g. `"#7d78c6"`) — other CSS colour formats (`rgb()`, named colours) are rejected because the value is interpolated into the page's server-rendered `<style>` tag; to reset it to the template default, send `--data '{"primary_color": null}'` (there is no flag spelling for null). `--card-width` accepts the friendly names `narrow`/`medium`/`wide` **or** the raw stored Tailwind class directly (`max-w-2xl`/`max-w-3xl`/`max-w-4xl`); friendly names map `narrow`→`max-w-2xl`, `medium`→`max-w-3xl`, `wide`→`max-w-4xl`, and **reads always return the stored class, never the friendly name** — PATCH `--card-width wide` and the next `pages:get` returns `"max-w-4xl"`.
+Appearance flags: `--template` is the page skin (`basic-new`, `showcase` or `future`), stored verbatim as `settings.template` — see the skin guide under `templates:list` for what each looks like and when to pick it. `--dark-mode` is a plain creator-side toggle (column `dark_mode_enabled`) — there is no visitor `prefers-color-scheme` behavior, so this is the only thing that controls it. `--primary-color` must be a hex colour only (3, 4, 6 or 8 digits, e.g. `"#7d78c6"`) — other CSS colour formats (`rgb()`, named colours) are rejected because the value is interpolated into the page's server-rendered `<style>` tag; to reset it to the template default, send `--data '{"primary_color": null}'` (there is no flag spelling for null). `--card-width` accepts the friendly names `narrow`/`medium`/`wide` **or** the raw stored Tailwind class directly (`max-w-2xl`/`max-w-3xl`/`max-w-4xl`); friendly names map `narrow`→`max-w-2xl`, `medium`→`max-w-3xl`, `wide`→`max-w-4xl`, and **reads always return the stored class, never the friendly name** — PATCH `--card-width wide` and the next `pages:get` returns `"max-w-4xl"`.
 
 ```sh
 tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
