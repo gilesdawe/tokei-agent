@@ -9,6 +9,7 @@ import { request } from "./http.js";
 import type { HttpMethod } from "./http.js";
 import { VERSION } from "./index.js";
 import type { Io } from "./index.js";
+import { uploadMedia } from "./media.js";
 
 const LATEST_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -43,6 +44,10 @@ interface ToolSpec {
   fixedBody?: Record<string, unknown>;
   // Append a one-time-secret notice when the response contains a whsec_ secret.
   warnSecretOnce?: boolean;
+  // Escape hatch for tools that don't fit the generic single-request HTTP
+  // path (e.g. media_upload's two-step POST-ticket-then-PUT-bytes flow).
+  // Checked at the top of callTool, before buildPath/query/body/request().
+  handler?: (args: Record<string, unknown>, io: Io) => Promise<ToolResult>;
 }
 
 const enc = encodeURIComponent;
@@ -75,7 +80,7 @@ const TOOL_SPECS: ToolSpec[] = [
       inputSchema: {
         type: "object",
         properties: {
-          status: { type: "string", enum: ["draft", "active", "ended", "paused"] },
+          status: { type: "string", enum: ["draft", "active", "completed", "deleted"] },
           mode: { type: "string", enum: ["competition", "gamification", "sharing_only"] },
           ...PAGINATION,
         },
@@ -225,7 +230,7 @@ const TOOL_SPECS: ToolSpec[] = [
     def: {
       name: "pages_update",
       description:
-        "Update a page: title, description, start/end dates, prizes, reward tiers. At least one field; unknown fields are rejected (422). prizes and reward_thresholds each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
+        "Update a page: title, description, start/end dates, prizes, reward tiers, appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes and reward_thresholds each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -279,6 +284,37 @@ const TOOL_SPECS: ToolSpec[] = [
             type: "string",
             enum: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
             description: "Content column width. Friendly names map to Tailwind max-w classes server-side.",
+          },
+          image_video: {
+            type: ["string", "null"],
+            description:
+              "Hero media — an image or a video URL, typically the public_url from media_upload. Must be an https Supabase storage or Cloudinary URL (media_upload's output already qualifies). null clears it.",
+          },
+          secondary_image: {
+            type: ["string", "null"],
+            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+          },
+          third_image: {
+            type: ["string", "null"],
+            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+          },
+          fourth_image: {
+            type: ["string", "null"],
+            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+          },
+          fifth_image: {
+            type: ["string", "null"],
+            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+          },
+          background_image: {
+            type: ["string", "null"],
+            description:
+              "Page background image URL (same host allowlist as image_video); interpolated into the page's CSS. null clears it.",
+          },
+          og_image: {
+            type: ["string", "null"],
+            description:
+              "Social-share preview image URL (same host allowlist as image_video). null clears it.",
           },
         },
         required: ["contest_id"],
@@ -413,6 +449,55 @@ const TOOL_SPECS: ToolSpec[] = [
     pathParam: "webhook_id",
     buildPath: (id) => `/webhooks/${enc(id!)}`,
   },
+  {
+    def: {
+      name: "media_upload",
+      description:
+        "Upload an image or video from local disk (two-step: this call requests a signed upload ticket, then PUTs the file bytes to it) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. The signed-upload bucket caps uploads at 5MB — applies to video as well as images, so a >5MB file fails at the PUT step with a 413 from storage, not from Tokei. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          file_path: {
+            type: "string",
+            description: "Path to the local file to upload (read from disk where this MCP server runs).",
+          },
+          content_type: {
+            type: "string",
+            description:
+              "Override the content type inferred from file_path's extension, e.g. image/png or video/mp4.",
+          },
+        },
+        required: ["file_path"],
+      },
+    },
+    // Unused — media_upload bypasses the generic single-request path via
+    // `handler` below, but buildPath is a required field on ToolSpec.
+    buildPath: () => "/media",
+    handler: async (args, io) => {
+      const filePath = args.file_path;
+      if (typeof filePath !== "string" || filePath.length === 0) {
+        return toolError("file_path must be a non-empty string");
+      }
+      const contentTypeOverride = typeof args.content_type === "string" ? args.content_type : undefined;
+      // callTool has already confirmed TOKEI_API_KEY is set before reaching
+      // any handler.
+      const apiKey = io.env.TOKEI_API_KEY!;
+      const outcome = await uploadMedia({
+        filePath,
+        contentTypeOverride,
+        apiKey,
+        baseUrl: io.env.TOKEI_API_URL || DEFAULT_BASE_URL,
+        fetchImpl: io.fetchImpl,
+        binaryFetchImpl: io.binaryFetchImpl,
+        readFileBytes: io.readFileBytes,
+      });
+      if (outcome.kind === "usage_error") return toolError(outcome.message);
+      return {
+        content: [{ type: "text", text: JSON.stringify(outcome.payload, null, 2) }],
+        isError: outcome.exitCode !== 0,
+      };
+    },
+  },
 ];
 
 export const TOOLS: ToolDef[] = TOOL_SPECS.map((s) => s.def);
@@ -465,6 +550,12 @@ async function callTool(
     return toolError(
       "TOKEI_API_KEY is not set. Create a key at https://tokei.io (Dashboard, Settings, API Keys) and set it in this MCP server's environment.",
     );
+  }
+
+  // Escape hatch for tools that don't fit the generic single-request HTTP
+  // path below (media_upload's two-step POST-ticket-then-PUT-bytes flow).
+  if (spec.handler) {
+    return spec.handler(args, io);
   }
 
   const pathValue = spec.pathParam !== undefined ? String(args[spec.pathParam]) : undefined;

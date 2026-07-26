@@ -148,7 +148,7 @@ describe("createMcpSession — lifecycle / protocol", () => {
 });
 
 describe("createMcpSession — tools/list", () => {
-  it("lists exactly the 16 tools", async () => {
+  it("lists exactly the 17 tools", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
     const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -171,6 +171,7 @@ describe("createMcpSession — tools/list", () => {
         "webhooks_list",
         "webhooks_create",
         "webhooks_delete",
+        "media_upload",
       ].sort(),
     );
     for (const tool of res.result.tools as any[]) {
@@ -188,6 +189,7 @@ describe("createMcpSession — tools/list", () => {
     expect(byName("entries_create").inputSchema.required).toEqual(["contest_id", "email"]);
     expect(byName("pages_publish").inputSchema.required).toEqual(["contest_id"]);
     expect(byName("pages_unpublish").inputSchema.required).toEqual(["contest_id"]);
+    expect(byName("media_upload").inputSchema.required).toEqual(["file_path"]);
     const meRequired = byName("me").inputSchema.required;
     expect(meRequired === undefined || meRequired.length === 0).toBe(true);
     const templatesListRequired = byName("templates_list").inputSchema.required;
@@ -229,6 +231,38 @@ describe("createMcpSession — tools/list", () => {
 
     // contest_id stays the only required field — the new fields are optional.
     expect(tool.inputSchema.required).toEqual(["contest_id"]);
+  });
+
+  it("pages_update advertises the seven media fields", () => {
+    const tool = TOOLS.find((t) => t.name === "pages_update")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    for (const field of [
+      "image_video",
+      "secondary_image",
+      "third_image",
+      "fourth_image",
+      "fifth_image",
+      "background_image",
+      "og_image",
+    ]) {
+      expect(props[field]).toBeDefined();
+      expect(props[field].type).toEqual(["string", "null"]);
+      expect(typeof props[field].description).toBe("string");
+    }
+
+    // contest_id stays the only required field.
+    expect(tool.inputSchema.required).toEqual(["contest_id"]);
+  });
+
+  it("media_upload declares file_path (required) and content_type (optional)", () => {
+    const tool = TOOLS.find((t) => t.name === "media_upload")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+    expect(props.file_path).toBeDefined();
+    expect(props.file_path.type).toBe("string");
+    expect(props.content_type).toBeDefined();
+    expect(props.content_type.type).toBe("string");
+    expect(tool.inputSchema.required).toEqual(["file_path"]);
   });
 });
 
@@ -492,6 +526,91 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
   });
 });
 
+const MEDIA_TICKET_DATA = {
+  upload_url:
+    "https://xyz.supabase.co/storage/v1/object/upload/sign/tokei-public/api-uploads/u1/uuid.png?token=tok",
+  token: "tok",
+  method: "PUT",
+  headers: { "content-type": "image/png", "x-upsert": "false" },
+  bucket: "tokei-public",
+  path: "api-uploads/u1/uuid.png",
+  public_url: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/api-uploads/u1/uuid.png",
+  content_type: "image/png",
+  filename: "hero.png",
+  max_bytes: 5242880,
+  expires_in: 7200,
+  expires_at: "2026-07-26T12:00:00.000Z",
+};
+
+describe("createMcpSession — tools/call media_upload", () => {
+  it("does the two-step upload (POST ticket, PUT bytes) and returns the public_url", async () => {
+    const h = harness({ response: jsonRes({ success: true, data: MEDIA_TICKET_DATA }) });
+    const putCalls: { url: string; init: { method: string; headers: Record<string, string>; body: Uint8Array } }[] =
+      [];
+    (h.io as any).binaryFetchImpl = async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body: Uint8Array },
+    ) => {
+      putCalls.push({ url, init });
+      return { status: 200, headers: { get: () => null }, text: async () => "" };
+    };
+    (h.io as any).readFileBytes = (_path: string) => new Uint8Array(150).fill(3);
+
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "media_upload", arguments: { file_path: "hero.png" } },
+    });
+
+    expect(res.result.isError).toBe(false);
+    expect(h.calls).toHaveLength(1);
+    const jsonUrl = new URL(h.calls[0].url);
+    expect(jsonUrl.pathname).toBe("/api/v1/media");
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      filename: "hero.png",
+      content_type: "image/png",
+      size_bytes: 150,
+    });
+
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].url).toBe(MEDIA_TICKET_DATA.upload_url);
+
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.success).toBe(true);
+    expect(payload.data.public_url).toBe(MEDIA_TICKET_DATA.public_url);
+  });
+
+  it("missing file_path -> tool error, isError true, no HTTP calls", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "media_upload", arguments: {} },
+    });
+    expect(res.result.isError).toBe(true);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("Io without readFileBytes/binaryFetchImpl -> tool error mentioning 'not supported', no HTTP calls", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "media_upload", arguments: { file_path: "hero.png" } },
+    });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toMatch(/not supported in this environment/);
+    expect(h.calls).toEqual([]);
+  });
+});
+
 describe("createMcpSession — tools/call errors", () => {
   it("API error -> isError true, still a JSON-RPC result (not a JSON-RPC error)", async () => {
     const h = harness({
@@ -577,7 +696,7 @@ describe("createMcpSession — tools/call errors", () => {
     });
     expect(initRes.result.protocolVersion).toBe("2025-06-18");
     const listRes = await rpc(session, { jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(listRes.result.tools.length).toBe(16);
+    expect(listRes.result.tools.length).toBe(17);
   });
 });
 

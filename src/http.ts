@@ -21,6 +21,38 @@ export interface RateLimit {
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
+// Separate from FetchLike (used only by media.ts's step-2 signed-URL PUT):
+// widening FetchLike's `body` to `string | Uint8Array` would break the ~31
+// existing `JSON.parse(init.body!)` test assertions across the suite via
+// arrow-type contravariance. Kept side-by-side instead.
+export type BinaryFetchLike = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: Uint8Array },
+) => Promise<HttpResponse>;
+
+export interface BinaryPutResult {
+  status: number;
+  ok: boolean;
+  text: string;
+}
+
+/**
+ * Raw PUT of file bytes to an absolute (already-signed) URL — no baseUrl
+ * prefixing, no bearer auth: the signing token lives in the URL's own query
+ * string (see media.ts). Caller supplies exactly the headers the ticket
+ * response specified.
+ */
+export async function putBinary(
+  url: string,
+  bytes: Uint8Array,
+  headers: Record<string, string>,
+  fetchImpl: BinaryFetchLike,
+): Promise<BinaryPutResult> {
+  const res = await fetchImpl(url, { method: "PUT", headers, body: bytes });
+  const text = await res.text();
+  return { status: res.status, ok: res.status >= 200 && res.status < 300, text };
+}
+
 export interface RequestOptions {
   baseUrl: string;
   apiKey: string;

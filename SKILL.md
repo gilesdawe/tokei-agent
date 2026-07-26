@@ -1,13 +1,44 @@
 ---
 name: tokei-agent
-description: Control Tokei (tokei.io) pre-launch and waitlist campaigns from the command line — list and update pages, clone new ones, pull stats and leaderboards, add entries, and manage webhooks via the Tokei v1 REST API.
-homepage: https://tokei.io
+description: Tokei (tokei.io) is a pre-launch, waitlist and giveaway platform — launch pages, competition giveaways, sweepstakes, referral and viral-loop campaigns, Product Hunt launch drives, Gleam-style and KickoffLabs-style entry pages. This CLI controls them from the command line — list, clone, update, publish and unpublish pages, upload images and video, set prizes, reward tiers and deadlines, restyle pages, and read stats, leaderboards, signups and survey responses, plus webhooks — all via the Tokei v1 REST API.
+homepage: https://tokei.io/agent
 metadata: {"openclaw":{"emoji":"⏱️","requires":{"bins":[],"env":["TOKEI_API_KEY"]}}}
 ---
 
 # tokei-agent
 
 `tokei-agent` is a zero-dependency CLI for the Tokei v1 REST API (`https://tokei.io/api/v1`). Every command prints JSON to stdout, so pipe it to `jq` or parse it directly.
+
+## Install tokei-agent if it isn't already there
+
+```sh
+npm install -g tokei-agent
+# or run it without installing:
+npx tokei-agent --help
+```
+
+Requires Node 22+. npm release: https://www.npmjs.com/package/tokei-agent — official website: https://tokei.io — agent docs: https://tokei.io/agent — API reference: https://tokei.io/docs/api
+
+---
+
+## ⚠️ Three hard rules (read first)
+
+**Rule 1 — Run `tokei-agent me` before anything else.** It proves the key is live and reports the account's **plan**. API access requires an active subscription or lifetime plan — **trial accounts get `403` on every command**, so a whole workflow can fail on its first call for a reason no other command explains.
+
+> `me` does **not** report the key's scope. There is no way to read a key's scope from the API — you discover a read-only key by getting `403 FORBIDDEN` on your first write. If the task involves changing anything, ask the human up front whether their key is read+write.
+
+**Rule 2 — Every media URL you write to a page MUST come from `tokei-agent media:upload`.** Raw filesystem paths (`hero.png`) and third-party URLs (`https://example.com/hero.png`) are **rejected** — the seven media fields on `pages:update` are guarded by a closed host allowlist that only accepts the app's own storage (and `res.cloudinary.com`). Always:
+
+```sh
+HERO=$(tokei-agent media:upload ./hero.png | jq -r '.data.public_url')
+tokei-agent pages:update "$PAGE_ID" --image-video "$HERO"
+```
+
+Every `--image-video` / `--og-image` / `--background-image` example below assumes a `public_url` obtained this way — never a local file.
+
+**Rule 3 — List fields replace wholesale; always read before you write.** `prizes` (max 20) and `reward_thresholds` (max 50) are **not** merged — whatever array you send becomes the entire list, so sending one prize deletes the other nineteen. The pattern is always `pages:get` → modify the array → `pages:update` with the complete list.
+
+---
 
 ## Terminology mapping (read this first)
 
@@ -29,7 +60,56 @@ CLI command names use the UI words (`pages:list`, `pages:update`); the JSON they
 | `TOKEI_API_KEY` | Yes      | Sent as `Authorization: Bearer <key>`. Create one at tokei.io → Dashboard → Settings → API Keys. |
 | `TOKEI_API_URL` | No       | Base URL override (default `https://tokei.io`).                                  |
 
-Keys have a scope: **read-only** or **read+write**. Write commands need a read+write key; a read-only key gets `403`. Keys can also carry an expiry — an expired key gets `401`. Prefer a read-only key unless the task actually changes something. API access requires an active subscription or lifetime plan — trial accounts get `403` on everything.
+Keys have a scope: **read-only** or **read+write**. Write commands need a read+write key; a read-only key gets `403`. Keys can also carry an expiry — an expired key gets `401`. Prefer a read-only key unless the task actually changes something.
+
+## Core workflow
+
+The fundamental pattern, end to end:
+
+1. **Verify** — confirm the key and the plan (Rule 1)
+2. **Discover** — list your pages, and the platform's named starting points
+3. **Create** — clone a template (or one of your own pages) into a new draft
+4. **Prepare** — upload media and get back allowlisted URLs (Rule 2)
+5. **Shape** — PATCH copy, dates, prizes, appearance and media onto the page
+6. **Publish** — flip the draft live (needs a future `end_date`)
+7. **Monitor** — stats, leaderboard, signups
+8. **Automate** — subscribe a webhook instead of polling
+
+```sh
+# 1. Verify — do this first, always
+tokei-agent me
+
+# 2. Discover
+tokei-agent pages:list --status active
+tokei-agent templates:list
+
+# 3. Create (returns a draft page)
+PAGE=$(tokei-agent pages:clone --title "Spring Launch Waitlist" \
+  --template product-hunt | jq -r '.data.id')
+
+# 4. Prepare media (Rule 2 — never pass a raw path)
+HERO=$(tokei-agent media:upload ./hero.png | jq -r '.data.public_url')
+
+# 5. Shape
+tokei-agent pages:update "$PAGE" \
+  --description "Join the list for early access." \
+  --template showcase --dark-mode true --primary-color "#7d78c6" \
+  --image-video "$HERO"
+
+# 6. Publish (end_date must be in the future — set it in the same call if unset)
+tokei-agent pages:publish "$PAGE" --data '{"end_date":"2026-09-01T00:00:00Z"}'
+
+# 7. Monitor
+tokei-agent stats "$PAGE"
+tokei-agent leaderboard "$PAGE" --per-page 10
+tokei-agent entries:list "$PAGE"
+
+# 8. Automate
+tokei-agent webhooks:create --url https://yourserver.com/webhooks/tokei \
+  --events entry.created
+```
+
+Confirm every write by reading it back with `pages:get "$PAGE"` — everything writable is also readable.
 
 ## Output envelope, exit codes
 
@@ -38,17 +118,49 @@ Keys have a scope: **read-only** or **read+write**. Write commands need a read+w
 - Exit code `1` — API or network error. The API's JSON error body (same envelope, with `rate_limit`) is still printed on stdout; pure network failures print `{"ok": false, "error": {"type": "network_error", "message": ...}}`.
 - Exit code `2` — usage error (bad flags, missing arguments, missing `TOKEI_API_KEY`). Printed as JSON on **stderr**: `{"ok": false, "error": {"type": "usage_error", "message": ...}}`. Nothing was sent to the API.
 
-> **Known issue — exit codes on Node 24 / Windows.** The CLI can print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` reads `-1073740791` / `0xC0000409` on success and failure alike). Judge a run by the JSON on stdout, not by the exit status.
+**The shape, so you can `jq` it without guessing.** Success always nests the payload under `data` — it is never a bare top-level array:
+
+```jsonc
+// single-object reads (pages:get, me, media:upload, pages:clone, …)
+{ "success": true, "data": { … }, "rate_limit": { … } }
+
+// list reads (pages:list, leaderboard, entries:list, surveys:list,
+//             templates:list, webhooks:list)
+{ "success": true, "data": [ … ],
+  "pagination": { "page": 1, "per_page": 20, "total_pages": 3, "total_count": 47 },
+  "rate_limit": { … } }
+
+// errors
+{ "success": false,
+  "error": { "code": "VALIDATION_ERROR", "message": "…", "status": 422,
+             "details": [{ "field": "end_date", "message": "…" }] },
+  "rate_limit": { … } }
+```
+
+So the idioms are:
+
+```sh
+tokei-agent pages:list | jq -r '.data[0].id'                          # first page's id
+tokei-agent pages:list | jq -r '.data[] | select(.status=="active") | .id'
+tokei-agent pages:list --per-page 100 | jq '.pagination.total_pages'  # more to fetch?
+tokei-agent pages:get "$PAGE" | jq -r '.data.public_url'
+tokei-agent media:upload ./hero.png | jq -r '.data.public_url'
+tokei-agent pages:update "$PAGE" --title x | jq -r '.error.details[]?.field'
+```
+
+`templates:list` and `me` are unpaginated — they return `data` with no `pagination` key.
+
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.2.3).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade.
 
 ## Commands (read — any key)
 
-**`me`** — verify the key, see plan and API usage.
+**`me`** — verify the key, see plan and API usage. Returns `user_id`, `email`, `plan`, `active_contests` and an `api_usage` block (`requests_today`, `daily_limit`, `rate_limit_per_minute`). Not the key's scope — see Rule 1.
 
 ```sh
 tokei-agent me
 ```
 
-**`pages:list`** — list your pages. Flags: `--status draft|active|ended|paused`, `--mode competition|gamification|sharing_only`, `--page <n>`, `--per-page <1-100>`. Heads-up on the status vocabulary: pages are **stored** as `draft`, `active`, `completed` or `deleted`, but this filter accepts an older list (`draft`, `active`, `ended`, `paused`). `draft` and `active` mean the same thing in both, so filter on those and read the real value off each page's `status` field.
+**`pages:list`** — list your pages. Flags: `--status draft|active|completed|deleted`, `--mode competition|gamification|sharing_only`, `--page <n>`, `--per-page <1-100>`. The filter values are exactly the values a page's `status` field can hold, so what you read back is what you can filter on. (`completed` is what an ended promotion stores — there is no `ended` or `paused` status; those were accepted by older builds and always returned nothing.)
 
 ```sh
 tokei-agent pages:list --status active --per-page 20
@@ -63,11 +175,11 @@ tokei-agent pages:list --status active --per-page 20
 | `primary_color` | Brand colour as a CSS value (e.g. `#7d78c6`); `null` means the template default. `settings.color` is a deprecated alias of it. |
 | `card_width` | `max-w-2xl` \| `max-w-3xl` \| `max-w-4xl`; `null` renders as `max-w-2xl`. |
 | `settings.template` | Page skin: `basic-new`, `showcase` or `future`. |
-| `image_video` | Hero media — an image **or** a video URL. May carry dimension hints as query params. |
-| `secondary_image` … `fifth_image`, `background_image`, `og_image` | The page's other media slots; `null` when unset. |
+| `image_video` | Hero media — an image **or** a video URL. May carry dimension hints as query params. Writable via `pages:update --image-video` (get the URL from `media:upload`). |
+| `secondary_image` … `fifth_image`, `background_image`, `og_image` | The page's other media slots; `null` when unset. Each writable via its own `pages:update` flag — see the media flags note under `pages:update` below. |
 | `campaign_name`, `project_name` | **Read-only.** `project_name` is the small subheading under the headline; `campaign_name` is the internal dashboard name and never appears on the page. |
 
-`primary_color`, `card_width` and `settings.template` are now writable via `pages:update` (see below); `dark_mode_enabled` writes through `--dark-mode` there too, though it isn't itself a field in this table. The remaining fields (`image_video` and the other media slots) are still read-only for now — and `campaign_name`/`project_name` always will be.
+`primary_color`, `card_width`, `settings.template` and all seven media fields (`image_video`, `secondary_image`, `third_image`, `fourth_image`, `fifth_image`, `background_image`, `og_image`) are now writable via `pages:update` (see below); `dark_mode_enabled` writes through `--dark-mode` there too, though it isn't itself a field in this table. `campaign_name`/`project_name` remain read-only always.
 
 ```sh
 tokei-agent pages:get 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90
@@ -97,31 +209,37 @@ tokei-agent entries:list 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --email fan@exampl
 tokei-agent surveys:list 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --page 2
 ```
 
+**`webhooks:list`** — list webhook subscriptions. Reading them needs no write scope (only `webhooks:create`/`webhooks:delete` do). Flags: `--page`, `--per-page <1-100>`. Watch `failure_count`: a subscription is auto-disabled after 10 consecutive failed deliveries.
+
+```sh
+tokei-agent webhooks:list
+```
+
 **`templates:list`** — the platform's named starting points, for cloning with `pages:clone --template <slug>`. Same list for every key — not scoped to your account (it's platform content, not the caller's). No flags, no pagination.
 
 ```sh
 tokei-agent templates:list
 ```
 
-Example response — illustrative only: the live menu depends on which templates the platform has published. Call `templates:list` and use the slugs it returns; never hardcode one.
+Example response — the real menu at the time of writing. It grows as the platform publishes templates, so call `templates:list` and use the slugs it returns; never hardcode one.
 
 ```json
 {
   "success": true,
   "data": [
     {
-      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "id": "5f988c4e-3faf-49f0-9ee4-438cb5efc491",
       "slug": "product-hunt",
-      "name": "Product Hunt Launch",
-      "skin": "showcase",
-      "entry_method_count": 3
+      "name": "Product Hunt launch — upvote & share drive (Product Hunt, X, LinkedIn actions)",
+      "skin": "basic-new",
+      "entry_method_count": 5
     },
     {
-      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
-      "slug": "starter",
-      "name": "Starter",
+      "id": "06743256-2e8e-4ede-a431-f17866fae1f6",
+      "slug": "competition-starter",
+      "name": "Starter — Gleam-style competition giveaway (X, Instagram, TikTok, Facebook entries)",
       "skin": "basic-new",
-      "entry_method_count": 1
+      "entry_method_count": 6
     }
   ],
   "rate_limit": { "limit": 60, "remaining": 59, "reset": 1753000000 }
@@ -157,9 +275,26 @@ tokei-agent pages:clone --title "Spring Launch Waitlist" --template product-hunt
 
 `--status active` makes the page live immediately at the returned `public_url`; the default is `draft`. Reuse an `--idempotency-key` and you get `409` with the existing page's id in `error.details` instead of a duplicate.
 
-**`pages:update <contestId>`** — PATCH a page. Simple fields via flags: `--title`, `--description`, `--start-date <iso>`, `--end-date <iso>`, `--template basic-new|showcase|future`, `--dark-mode true|false`, `--primary-color "#7d78c6"`, `--card-width narrow|medium|wide`. Prizes, reward tiers, nulls, or a full body via `--data`. At least one field required; unknown fields are rejected (422). `prizes` (max 20) and `reward_thresholds` (max 50) each **replace the existing list wholesale** — read the current lists with `pages:get` first, modify, and send the complete list back. A future `start_date` pauses new entries until then; setting `end_date` recomputes `days_left` — but a page whose winners have already been drawn rejects any `end_date` change with `409 WINNERS_ALREADY_SELECTED` (clearing it via `--data '{"end_date": null}'` is still allowed). `--title` sets the visible page headline (and the dashboard name), and `--description` accepts basic rich-text HTML which is sanitized on write, so unsupported tags come back stripped.
+**`media:upload <file>`** — upload an image or video and get back a `public_url` to feed into `pages:update`'s media flags (below). Two HTTP calls under the hood, both handled for you: (1) request a short-lived signed upload ticket from Tokei; (2) `PUT` the file bytes straight to a Supabase Storage host with **no `Authorization` header** — the signing token lives in that URL's own query string. Nothing is stored until step 2 succeeds, so a step-1 failure never burns anything. Content type is inferred from the file extension (`.jpg`/`.jpeg`/`.png`/`.gif`/`.webp`/`.mp4`/`.webm`/`.mov`); override it with `--content-type <type>` for an extensionless or misnamed file. `application/pdf` is not accepted — only image and video. Prints `{public_url, path, content_type, filename, size_bytes}` under `data`.
+
+```sh
+tokei-agent media:upload ./hero.png
+tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
+  --image-video https://xyz.supabase.co/storage/v1/object/public/tokei-public/api-uploads/u1/<uuid>.png
+```
+
+Things that surprise agents:
+
+- **The 5MB bucket cap applies to the signed-upload bucket itself, not to image vs. video specifically — so video must be ≤5MB too.** This is thin for video; a real clip is likely to exceed it. There is no larger-upload path through this API today.
+- **The 50/day cap counts tickets issued (step 1), not completed uploads.** A step-1 call that never gets PUT still burns quota — don't loop calling `media:upload` speculatively.
+- **A file over 5MB fails at step 2 with a `413` from Supabase Storage, not from Tokei.** The CLI surfaces this as `{"ok": false, "error": {"type": "upload_failed", "stage": "storage_put", "status": 413, "message": "..."}}` — see the error-semantics note below; it is a different shape from the usual `error.code` envelope because it isn't a Tokei API response.
+- **The stored object name is always a server-generated UUID.** The `filename` you send (or that the CLI infers from your local path) is validated and echoed back in the response, but never used to name anything — so reusing a filename never collides or overwrites.
+
+**`pages:update <contestId>`** — PATCH a page. Simple fields via flags: `--title`, `--description`, `--start-date <iso>`, `--end-date <iso>`, `--template basic-new|showcase|future`, `--dark-mode true|false`, `--primary-color "#7d78c6"`, `--card-width narrow|medium|wide`, and the seven media flags below. Prizes, reward tiers, nulls, or a full body via `--data`. At least one field required; unknown fields are rejected (422). `prizes` (max 20) and `reward_thresholds` (max 50) each **replace the existing list wholesale** — read the current lists with `pages:get` first, modify, and send the complete list back (Rule 3). A future `start_date` pauses new entries until then; setting `end_date` recomputes `days_left` — but a page whose winners have already been drawn rejects any `end_date` write, **setting or clearing**, with `409 WINNERS_ALREADY_SELECTED`. Clearing the date via `--data '{"end_date": null}'` also requires the page to be unpublished: an **active** page must keep a deadline (otherwise it renders as live forever while every signup is rejected), so clearing one returns `422` on field `end_date` — send `{"status": "draft", "end_date": null}` together, or a replacement date. `--title` sets the visible page headline (and the dashboard name), and `--description` accepts basic rich-text HTML which is sanitized on write, so unsupported tags come back stripped.
 
 Appearance flags: `--template` is the page skin (`basic-new`, `showcase` or `future`), stored verbatim as `settings.template` — see the skin guide under `templates:list` for what each looks like and when to pick it. `--dark-mode` is a plain creator-side toggle (column `dark_mode_enabled`) — there is no visitor `prefers-color-scheme` behavior, so this is the only thing that controls it. `--primary-color` must be a hex colour only (3, 4, 6 or 8 digits, e.g. `"#7d78c6"`) — other CSS colour formats (`rgb()`, named colours) are rejected because the value is interpolated into the page's server-rendered `<style>` tag; to reset it to the template default, send `--data '{"primary_color": null}'` (there is no flag spelling for null). `--card-width` accepts the friendly names `narrow`/`medium`/`wide` **or** the raw stored Tailwind class directly (`max-w-2xl`/`max-w-3xl`/`max-w-4xl`); friendly names map `narrow`→`max-w-2xl`, `medium`→`max-w-3xl`, `wide`→`max-w-4xl`, and **reads always return the stored class, never the friendly name** — PATCH `--card-width wide` and the next `pages:get` returns `"max-w-4xl"`.
+
+Media flags: `--image-video <url>` (the hero — an image **or** a video), `--secondary-image <url>`, `--third-image <url>`, `--fourth-image <url>`, `--fifth-image <url>` (the additional layout block slots), `--background-image <url>` (interpolated into the page's CSS), `--og-image <url>` (social-share preview). All seven accept only an `https` URL on the app's own Supabase public storage or `res.cloudinary.com` — exactly what `media:upload`'s `public_url` produces, so the normal flow is `media:upload` then `pages:update` with the URL it printed (Rule 2). There is no flag spelling for clearing a media field to `null`; use `--data '{"og_image": null}'`.
 
 ```sh
 tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
@@ -200,13 +335,7 @@ tokei-agent entries:create 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
 
 A duplicate email for the same page returns `409` — the person is already signed up; usually safe to treat as success.
 
-**`webhooks:list`** — list webhook subscriptions. Flags: `--page`, `--per-page <1-100>`. Watch `failure_count`: a subscription is auto-disabled after 10 consecutive failed deliveries.
-
-```sh
-tokei-agent webhooks:list
-```
-
-**`webhooks:create`** — subscribe an HTTPS endpoint. Flags: `--url` (required), `--events <e1,e2>` (required; currently only `entry.created` exists), `--data`.
+**`webhooks:create`** — subscribe an HTTPS endpoint. Flags: `--url` (required), `--events <e1,e2>` (required; currently only `entry.created` exists), `--data`. Capped at **10 active subscriptions per account** — the eleventh returns `400 BAD_REQUEST` telling you to delete one first.
 
 ```sh
 tokei-agent webhooks:create --url https://yourserver.com/webhooks/tokei --events entry.created
@@ -230,24 +359,90 @@ claude mcp add tokei --env TOKEI_API_KEY=tokei_k_... -- npx -y tokei-agent mcp
 
 ## `--data` semantics
 
-Write commands accept `--data '<json>'` or `--data @file.json` for the raw request body (must be a JSON object). Individual field flags are merged **on top of** `--data` — **flags win** on conflict. The merged body is sent to the API untouched: the CLI does no schema validation, so the API's `422` response with per-field `error.details` **is** the validation. Fields only reachable via `--data`: `prizes`, `reward_thresholds`, and nulls (e.g. `{"end_date": null}` clears the end date) on `pages:update`; `metadata` on `entries:create`.
+Write commands accept `--data '<json>'` or `--data @file.json` for the raw request body (must be a JSON object). Individual field flags are merged **on top of** `--data` — **flags win** on conflict. The merged body is sent to the API untouched: the CLI does no schema validation, so the API's `422` response with per-field `error.details` **is** the validation. Fields only reachable via `--data`: `prizes`, `reward_thresholds`, and nulls (e.g. `{"end_date": null}` clears the end date — only on a page that is not active) on `pages:update`; `metadata` on `entries:create`.
 
 ## Error semantics — what to DO per status
 
 | Status | `error.code`          | Meaning                                                                 | Agent action                                                                                     |
 | ------ | --------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| 400    | `BAD_REQUEST`         | Invalid query parameters.                                               | Fix the request. Do not retry as-is.                                                             |
+| 400    | `BAD_REQUEST`         | Invalid query parameters, or the 10-active-webhooks cap.                | Fix the request. Do not retry as-is.                                                             |
 | 401    | `UNAUTHORIZED`        | Missing, invalid, revoked, or **expired** key.                          | Stop and ask the human for a fresh key. Never retry.                                             |
 | 403    | `FORBIDDEN`           | Key is valid but: trial plan (no API access), or the key **lacks the write scope** for a write command. | Do not retry. Ask the human for a read+write key (or a plan upgrade). Not an ownership error.    |
 | 404    | `NOT_FOUND`           | Resource doesn't exist **or is not owned by this key's account** — ownership failures are masked as 404. `pages:clone --template <slug>` also 404s when the slug matches no template (`error.details` has `field: "template"`). | Verify the id via `pages:list` / `webhooks:list`, or the slug via `templates:list`. Do not retry. For `webhooks:delete`, a 404 usually means already deleted — safe to treat as success. |
 | 409    | `CONFLICT`            | `entries:create`: email already entered. `pages:clone`: idempotency key already used (existing page's id is in `error.details`). | Safe to treat as success in both cases — the desired state already exists. Do not retry.          |
-| 409    | `WINNERS_ALREADY_SELECTED` | `pages:update`: `--end-date` was changed on a page whose winners have already been drawn. | Do not retry. Tell the human the draw is final — they must clear the winner selection in the dashboard first. Other fields still patch fine; just omit `--end-date`. |
+| 409    | `WINNERS_ALREADY_SELECTED` | `pages:update`: `end_date` was set **or cleared** on a page whose winners have already been drawn. | Do not retry. Tell the human the draw is final — they must clear the winner selection in the dashboard first. Other fields still patch fine; just omit `--end-date`. |
 | 413    | `PAYLOAD_TOO_LARGE`   | Body over the 10KB limit.                                               | Shrink the body. Do not retry as-is.                                                             |
 | 422    | `VALIDATION_ERROR`    | Body failed validation; `error.details` is an array of `{field, message}`. | Fix exactly the listed fields, then retry once.                                                  |
-| 429    | `RATE_LIMIT_EXCEEDED` | Per-minute limit, or the 20/day clone cap.                              | Wait `Retry-After` seconds (in the response headers), then retry with exponential backoff.       |
+| 429    | `RATE_LIMIT_EXCEEDED` | Per-minute limit, the 20/day clone cap, or the 50/day media-ticket cap. | Wait `Retry-After` seconds (in the response headers), then retry with exponential backoff. On the two daily caps, trust `Retry-After` — `rate_limit` in the envelope reports the per-minute window, which will still look healthy. |
 | 5xx    | `INTERNAL_ERROR`      | Server fault.                                                           | Retry with exponential backoff, max 2–3 attempts, then report to the human.                      |
 | (none) | `network_error`       | Request never reached the API (DNS, timeout, refused).                  | Retry with backoff a couple of times, then report.                                               |
+
+`media:upload` step 1 (the ticket request) uses the table above as normal — an oversize declared `size_bytes` or a rejected `content_type` comes back as the usual `422 VALIDATION_ERROR`, and the 50/day ticket cap as the usual `429 RATE_LIMIT_EXCEEDED`. Step 2 (the `PUT` of the actual bytes) is **not a Tokei API call** — it hits Supabase Storage directly, so a failure there is a different, `error.code`-less shape: `{"ok": false, "error": {"type": "upload_failed", "stage": "storage_put", "status": <n>, "message": "..."}}`. In practice `status` is `413` — the real file exceeded the 5MB bucket cap despite an honest `size_bytes` declaration (or the declaration undersold it). Do not retry the same ticket; shrink the file and run `media:upload` again from scratch.
 
 ## Self-throttling
 
 Every successful and failed API response includes `rate_limit` in the envelope (from the `X-RateLimit-*` headers). Limits are per account: Subscriber 60 read / 30 write per minute, Lifetime 120 / 60. When `rate_limit.remaining` is low, slow down; when it's 0, sleep until `rate_limit.reset` (Unix epoch seconds) before the next call. Don't burn the budget discovering a 429 — read the envelope you already have.
+
+## Common gotchas
+
+1. **`TOKEI_API_KEY` not set** — exit code `2`, JSON on stderr, nothing sent to the API. Export the key first.
+2. **Trial plan gets `403` on everything** — API access needs an active subscription or a lifetime plan. Run `me` first (Rule 1) so this surfaces once, not on every command.
+3. **Read-only key gets `403` on writes, and nothing tells you in advance** — `me` doesn't report scope. If the task changes anything, confirm the key is read+write with the human before starting.
+4. **Media must go through `media:upload` first (Rule 2)** — raw filenames and external URLs are rejected by the host allowlist on all seven media fields. No exceptions, not even for a quick test.
+5. **5MB applies to video too**, and the 50/day media cap **counts tickets issued, not uploads** — never call `media:upload` speculatively in a loop.
+6. **`prizes` and `reward_thresholds` replace the whole list (Rule 3)** — `pages:get` first or you will silently delete the other entries.
+7. **A draft page still renders publicly at its URL** — `pages:unpublish` blocks new signups, it does not hide anything. Say this out loud to the user; they will assume otherwise.
+8. **Publishing needs a future `end_date`** — otherwise `422` on field `status`. Set it in the same call: `pages:publish <id> --data '{"end_date":"..."}'`.
+9. **Clearing `end_date` needs `status: draft` in the same body**, and is refused outright with `409 WINNERS_ALREADY_SELECTED` once winners are drawn.
+10. **Appearance values don't always read back as written** — `--card-width wide` reads back as `max-w-4xl`. That's correct, not a failed write.
+11. **`--primary-color` is hex only** — `rgb()` and named colours are rejected, because the value is interpolated into a server-rendered `<style>` tag.
+12. **`404` can mean "not yours"** — ownership failures are masked as not-found. Confirm the id with `pages:list` before assuming the page is gone.
+13. **`--status` takes `draft|active|completed|deleted`** — `ended` and `paused` are not real values; older builds accepted them and always returned an empty list.
+14. **`--data` is not validated locally** — it is sent untouched and the API's `422` with `error.details` is the validation. Read `.error.details[].field`.
+15. **Template slugs change** — always `templates:list` first; never hardcode a slug.
+
+## Quick reference
+
+```sh
+# Setup — required before anything else
+export TOKEI_API_KEY=tokei_k_...      # read-only unless you need to write
+tokei-agent me                        # verify key + plan FIRST (Rule 1)
+
+# Read (any key)
+tokei-agent pages:list --status active --per-page 20
+tokei-agent pages:get <contestId>
+tokei-agent stats <contestId>
+tokei-agent leaderboard <contestId> --per-page 10
+tokei-agent entries:list <contestId> --email fan@example.com
+tokei-agent surveys:list <contestId> --page 2
+tokei-agent webhooks:list
+tokei-agent templates:list
+
+# Create (write key)
+tokei-agent pages:clone --title "T" --template <slug>          # 20/day cap
+tokei-agent pages:clone --title "T" --source <promotionId>     # or clone your own
+tokei-agent media:upload ./hero.png                            # ≤5MB, 50 tickets/day
+
+# Update (write key) — read back with pages:get to confirm
+tokei-agent pages:update <id> --title "T" --description "<p>D</p>"
+tokei-agent pages:update <id> --start-date <iso> --end-date <iso>
+tokei-agent pages:update <id> --template showcase --dark-mode true \
+  --primary-color "#7d78c6" --card-width wide
+tokei-agent pages:update <id> --image-video <public_url> --og-image <public_url>
+tokei-agent pages:update <id> --data '{"prizes":[...]}'        # replaces the list
+tokei-agent pages:update <id> --data '{"og_image": null}'      # nulls need --data
+
+# Publish state (write key)
+tokei-agent pages:publish <id> --data '{"end_date":"2026-09-01T00:00:00Z"}'
+tokei-agent pages:unpublish <id>                               # still renders publicly!
+
+# Signups + webhooks (write key)
+tokei-agent entries:create <id> --email a@b.com --name "Ada" --points 10
+tokei-agent webhooks:create --url https://you.com/hook --events entry.created  # secret shown ONCE
+tokei-agent webhooks:delete <webhookId>
+
+# Other
+tokei-agent mcp                       # MCP stdio server (all 17 commands as tools)
+tokei-agent --help                    # full flag reference
+tokei-agent --version
+```

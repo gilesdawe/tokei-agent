@@ -3,3 +3,10 @@ dist/
 *.tgz
 *.tar.gz
 mcp-publisher.exe
+
+# Belt-and-braces: this directory is snapshotted out to the PUBLIC
+# gilesdawe/tokei-agent repo, where this file becomes the root .gitignore.
+# Never let a real tokei_k_ key or a log containing one ride along.
+.env
+.env.*
+*.log

@@ -3,8 +3,9 @@
 
 import { parseArgs } from "./args.js";
 import { request } from "./http.js";
-import type { FetchLike, HttpMethod } from "./http.js";
+import type { BinaryFetchLike, FetchLike, HttpMethod } from "./http.js";
 import { createMcpSession } from "./mcp.js";
+import { uploadMedia } from "./media.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
 export const VERSION = "0.2.2";
@@ -19,6 +20,14 @@ export interface Io {
   // Reads a file for `--data @file.json`. Optional so embedders without a
   // filesystem can omit it.
   readFile?: (path: string) => string;
+  // Reads a file as raw bytes for `media:upload <file>`. Optional so
+  // embedders without a filesystem can omit it (the command then reports a
+  // usage error) — same idiom as readFile.
+  readFileBytes?: (path: string) => Uint8Array;
+  // Raw-bytes PUT used by `media:upload`'s step 2 (signed-URL upload).
+  // Optional so embedders without network access for binary bodies can omit
+  // it (the command then reports a usage error) — same idiom as readFile.
+  binaryFetchImpl?: BinaryFetchLike;
   // Line stream driving the `mcp` command. Optional so embedders without a
   // stdin can omit it (the command then reports a usage error).
   stdin?: AsyncIterable<string>;
@@ -80,7 +89,12 @@ const COMMANDS: Record<string, CommandSpec> = {
   "pages:list": {
     buildPath: () => "/contests",
     flags: [
-      { name: "status", param: "status", kind: "enum", values: ["draft", "active", "ended", "paused"] },
+      {
+        name: "status",
+        param: "status",
+        kind: "enum",
+        values: ["draft", "active", "completed", "deleted"],
+      },
       { name: "mode", param: "mode", kind: "enum", values: ["competition", "gamification", "sharing_only"] },
       PAGE,
       PER_PAGE,
@@ -152,6 +166,15 @@ const COMMANDS: Record<string, CommandSpec> = {
         kind: "enum",
         values: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
       },
+      // Media (S2.5): public_url values from media:upload. See media:upload's
+      // help entry for the two-step flow that produces them.
+      { name: "image-video", field: "image_video", kind: "string" },
+      { name: "secondary-image", field: "secondary_image", kind: "string" },
+      { name: "third-image", field: "third_image", kind: "string" },
+      { name: "fourth-image", field: "fourth_image", kind: "string" },
+      { name: "fifth-image", field: "fifth_image", kind: "string" },
+      { name: "background-image", field: "background_image", kind: "string" },
+      { name: "og-image", field: "og_image", kind: "string" },
     ],
     acceptsData: true,
     requireBody: true,
@@ -356,7 +379,7 @@ Usage:
 Commands (read):
   me                          Show the authenticated account / API key
   pages:list                  List promotions
-                                --status draft|active|ended|paused
+                                --status draft|active|completed|deleted
                                 --mode competition|gamification|sharing_only
                                 --page <n>  --per-page <1-100>
   pages:get <contestId>       Get a single promotion
@@ -381,13 +404,26 @@ Commands (write — need a read+write API key):
                                 --description <d>  --prize <name>  --end-date <iso>
                                 --campaign-url <url>  --image-url <url>
                                 --status draft|active  --idempotency-key <k>  --data
+  media:upload <file>         Upload an image or video (two-step: request a
+                              signed ticket, PUT the bytes) and print a
+                              public_url to feed into pages:update's media
+                              flags below. ≤5MB per file — the signed-upload
+                              bucket caps this for video too, not just images.
+                              Content type is inferred from the extension
+                              (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov);
+                              override with --content-type <type>.
   pages:update <contestId>    Update a promotion. Simple fields via flags; prizes,
                               reward_thresholds (or a full body) via --data.
                                 --title <t>  --description <d>
                                 --start-date <iso>  --end-date <iso>
                                 --template basic-new|showcase|future
                                 --dark-mode true|false  --primary-color <hex>
-                                --card-width narrow|medium|wide  --data
+                                --card-width narrow|medium|wide (or max-w-2xl|3xl|4xl)
+                                --image-video <url>  --secondary-image <url>
+                                --third-image <url>  --fourth-image <url>
+                                --fifth-image <url>  --background-image <url>
+                                --og-image <url>  --data
+                              (media URLs come from media:upload's public_url)
   pages:publish <contestId>   Publish a page (status -> active). Requires an
                               end_date in the future, already stored or sent
                               in --data, e.g. --data '{"end_date":"..."}'
@@ -443,7 +479,10 @@ export async function main(argv: string[], io: Io): Promise<number> {
   }
 
   if (command === undefined) {
-    return usageError(io, `No command given. Valid commands: ${COMMAND_NAMES.join(", ")}, mcp`);
+    return usageError(
+      io,
+      `No command given. Valid commands: ${COMMAND_NAMES.join(", ")}, media:upload, mcp`,
+    );
   }
 
   if (command === "mcp") {
@@ -457,6 +496,44 @@ export async function main(argv: string[], io: Io): Promise<number> {
       if (reply !== undefined) io.stdout(reply);
     }
     return 0;
+  }
+
+  // media:upload is a two-call flow (POST a ticket, then PUT the bytes) that
+  // doesn't fit the single-request CommandSpec shape, so it's handled here,
+  // ahead of the COMMANDS table lookup.
+  if (command === "media:upload") {
+    const filePath = positionals[0];
+    if (filePath === undefined) {
+      return usageError(io, "media:upload requires a <file> argument");
+    }
+    const knownFlags = new Set(["content-type"]);
+    for (const provided of Object.keys(flags)) {
+      if (!knownFlags.has(provided)) {
+        return usageError(io, `Unknown flag --${provided} for this command`);
+      }
+    }
+    if (flags["content-type"] === "") {
+      return usageError(io, "--content-type requires a value");
+    }
+
+    const apiKey = io.env.TOKEI_API_KEY;
+    if (!apiKey) {
+      return usageError(io, "TOKEI_API_KEY is not set. Create a key at https://tokei.io and export it.");
+    }
+    const baseUrl = io.env.TOKEI_API_URL || DEFAULT_BASE_URL;
+
+    const outcome = await uploadMedia({
+      filePath,
+      contentTypeOverride: flags["content-type"],
+      apiKey,
+      baseUrl,
+      fetchImpl: io.fetchImpl,
+      binaryFetchImpl: io.binaryFetchImpl,
+      readFileBytes: io.readFileBytes,
+    });
+    if (outcome.kind === "usage_error") return usageError(io, outcome.message);
+    io.stdout(JSON.stringify(outcome.payload, null, 2));
+    return outcome.exitCode;
   }
 
   const spec = COMMANDS[command];

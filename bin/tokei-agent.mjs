@@ -3,22 +3,50 @@ import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { main } from "../dist/index.js";
 
+// Track the readline interface so it can be torn down explicitly — a live
+// stdin handle would otherwise keep the process alive after main() resolves.
+let rl = null;
+
 main(process.argv.slice(2), {
   env: process.env,
   fetchImpl: fetch,
   stdout: (line) => process.stdout.write(line + "\n"),
   stderr: (line) => process.stderr.write(line + "\n"),
   readFile: (path) => readFileSync(path, "utf8"),
+  // media:upload's file-bytes read and step-2 signed-URL PUT. A Buffer IS a
+  // Uint8Array, so readFileSync's return value satisfies readFileBytes as-is.
+  readFileBytes: (path) => readFileSync(path),
+  binaryFetchImpl: fetch,
   // Lazy: readline only attaches to stdin if the command iterates (mcp).
   stdin: {
-    [Symbol.asyncIterator]: () =>
-      createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator](),
+    [Symbol.asyncIterator]: () => {
+      rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+      return rl[Symbol.asyncIterator]();
+    },
   },
 })
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((err) => {
     process.stderr.write(
       JSON.stringify({ ok: false, error: { type: "internal_error", message: String(err) } }) + "\n",
     );
-    process.exit(1);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // Never call process.exit(): on Node 24 / Windows it aborts libuv teardown
+    // mid-close (Assertion failed: !(handle->flags & UV_HANDLE_CLOSING),
+    // src\win\async.c) and corrupts the exit code. Setting exitCode and letting
+    // the loop drain exits cleanly with the same code — and guarantees stdout
+    // is flushed. Close stdin explicitly if mcp attached it, so it cannot hold
+    // the loop open.
+    if (rl) {
+      rl.close();
+      if (typeof process.stdin.unref === "function") process.stdin.unref();
+    }
+    // Backstop for a stray handle (e.g. a keep-alive socket) holding the loop
+    // open: force the recorded code after a grace period. unref() so the timer
+    // itself never keeps the process alive.
+    setTimeout(() => process.exit(process.exitCode ?? 0), 2000).unref();
   });

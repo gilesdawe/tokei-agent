@@ -420,6 +420,57 @@ describe("main — write commands", () => {
     expect(JSON.parse(h.calls[0].init.body!)).toEqual({ primary_color: "not-a-hex-value" });
   });
 
+  it("pages:update media flags map to the right PATCH body fields", async () => {
+    const h = harness();
+    const code = await main(
+      [
+        "pages:update",
+        "c-1",
+        "--image-video",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/1.png",
+        "--secondary-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/2.png",
+        "--third-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/3.png",
+        "--fourth-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/4.png",
+        "--fifth-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/5.png",
+        "--background-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/6.png",
+        "--og-image",
+        "https://xyz.supabase.co/storage/v1/object/public/tokei-public/7.png",
+      ],
+      h.io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      image_video: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/1.png",
+      secondary_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/2.png",
+      third_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/3.png",
+      fourth_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/4.png",
+      fifth_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/5.png",
+      background_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/6.png",
+      og_image: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/7.png",
+    });
+  });
+
+  it.each([
+    "--image-video",
+    "--secondary-image",
+    "--third-image",
+    "--fourth-image",
+    "--fifth-image",
+    "--background-image",
+    "--og-image",
+  ])("pages:update %s= (empty value) -> usage error, exit 2, no call", async (flag) => {
+    const h = harness();
+    const code = await main(["pages:update", "c-1", `${flag}=`], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
   it('pages:publish <contestId> -> PATCH /api/v1/contests/:id with {"status":"active"}', async () => {
     const h = harness();
     const code = await main(["pages:publish", "c-1"], h.io);

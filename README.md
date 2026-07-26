@@ -16,10 +16,18 @@ Requires Node 22+.
 
 1. Create an API key at [tokei.io](https://tokei.io) → Dashboard → Settings → API Keys. Pick **read-only** unless you need to change things; API access requires an active subscription or lifetime plan.
 
-2. Export it:
+2. Export it — the syntax differs by shell:
 
 ```sh
-export TOKEI_API_KEY=tokei_k_...
+export TOKEI_API_KEY=tokei_k_...          # bash / zsh
+```
+
+```fish
+set -x TOKEI_API_KEY tokei_k_...          # fish
+```
+
+```powershell
+$env:TOKEI_API_KEY = "tokei_k_..."        # PowerShell
 ```
 
 3. Try it:
@@ -32,7 +40,7 @@ tokei-agent stats <contestId>        # analytics for one page
 
 Every command prints JSON to stdout with a top-level `rate_limit` object. Exit codes: `0` success, `1` API/network error, `2` usage error (JSON on stderr).
 
-> **Known issue — exit codes on Node 24 / Windows.** The CLI can print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` reads `-1073740791` / `0xC0000409` on success and failure alike). Judge a run by the JSON on stdout, not by the exit status.
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.2.3).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade.
 
 ## Commands
 
@@ -47,15 +55,19 @@ Read (any key):
 | `leaderboard <contestId>`  | Participants ranked by points                               |
 | `entries:list <contestId>` | Signups — filter with `--email`                             |
 | `surveys:list <contestId>` | Survey responses                                            |
+| `webhooks:list`            | List webhook subscriptions                                  |
+| `templates:list`           | The platform's named starting points, for `pages:clone --template` |
 
 Write (needs a read+write key):
 
 | Command                       | Does                                                                     |
 | ----------------------------- | ------------------------------------------------------------------------ |
-| `pages:clone`                 | Create a page by cloning one you own (or the starter template). 20/day cap |
-| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers                   |
+| `pages:clone`                 | Create a page by cloning one you own, a named template, or the starter. 20/day cap |
+| `media:upload <file>`         | Upload an image or video, get back a `public_url` for `pages:update`. ≤5MB per file (video too) |
+| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance, and media |
+| `pages:publish <contestId>`   | Take a page live (needs a future `end_date`)                             |
+| `pages:unpublish <contestId>` | Back to draft — blocks new signups, but the page still renders publicly  |
 | `entries:create <contestId>`  | Add a signup                                                             |
-| `webhooks:list`               | List webhook subscriptions                                               |
 | `webhooks:create`             | Subscribe an HTTPS endpoint (`whsec_` secret shown once — save it!)      |
 | `webhooks:delete <webhookId>` | Remove a subscription                                                    |
 
@@ -64,6 +76,8 @@ Write commands take simple fields as flags and full/nested bodies via `--data '<
 ```sh
 tokei-agent pages:clone --title "Spring Launch Waitlist" --source <promotionId>
 tokei-agent pages:update <contestId> --end-date 2026-09-01T00:00:00Z
+tokei-agent media:upload ./hero.png
+tokei-agent pages:update <contestId> --image-video <public_url from the upload above>
 ```
 
 ## MCP server
