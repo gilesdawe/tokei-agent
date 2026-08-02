@@ -114,6 +114,7 @@ Confirm every write by reading it back with `pages:get "$PAGE"` — everything w
 ## Output envelope, exit codes
 
 - stdout: the API's JSON body, augmented with a top-level `"rate_limit"` object: `{"limit": n, "remaining": n, "reset": <unix epoch seconds>}`, or `null` when the headers were absent (e.g. network failure).
+- **Agents always get this JSON.** From 0.3.2 the CLI renders a human banner and summary *only* when stdout is an interactive terminal. A subprocess, pipe, redirect, CI environment or the `mcp` transport has no TTY, so the JSON envelope below is what you will receive, byte for byte. If you ever need to force it explicitly, set `TOKEI_OUTPUT=json`.
 - Exit code `0` — success (HTTP 2xx).
 - Exit code `1` — API or network error. The API's JSON error body (same envelope, with `rate_limit`) is still printed on stdout; pure network failures print `{"ok": false, "error": {"type": "network_error", "message": ...}}`.
 - Exit code `2` — usage error (bad flags, missing arguments, missing `TOKEI_API_KEY`). Printed as JSON on **stderr**: `{"ok": false, "error": {"type": "usage_error", "message": ...}}`. Nothing was sent to the API.
@@ -150,7 +151,7 @@ tokei-agent pages:update "$PAGE" --title x | jq -r '.error.details[]?.field'
 
 `templates:list` and `me` are unpaginated — they return `data` with no `pagination` key.
 
-> **Known issue — exit codes on Node 24 / Windows (fixed in 0.2.3).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade.
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. Note that the published 0.3.0 package misreports `--version` as `0.2.2` (a labelling slip — the code is the fixed build): trust `npm view tokei-agent version`, not `--version`, when checking.
 
 ## Commands (read — any key)
 
@@ -160,7 +161,9 @@ tokei-agent pages:update "$PAGE" --title x | jq -r '.error.details[]?.field'
 tokei-agent me
 ```
 
-**`pages:list`** — list your pages. Flags: `--status draft|active|completed|deleted`, `--mode competition|gamification|sharing_only`, `--page <n>`, `--per-page <1-100>`. The filter values are exactly the values a page's `status` field can hold, so what you read back is what you can filter on. (`completed` is what an ended promotion stores — there is no `ended` or `paused` status; those were accepted by older builds and always returned nothing.)
+**`pages:list`** — list your pages. Flags: `--status draft|active|completed|deleted`, `--mode competition|gamification|sharing_only`, `--page <n>`, `--per-page <1-100>`. The filter values are exactly the values a page's `status` field can hold, so what you read back is what you can filter on. There is no `ended` or `paused` status; those were accepted by older builds and always returned nothing.
+
+`status` — both the field and the filter — is the **effective** status, derived from the stored value **and the dates**: a page whose `end_date` has passed reads and filters as `completed`, and one whose `start_date` is still in the future reads as `draft`. A creator can mark a page completed by hand, but nothing does so when `end_date` passes, so before 2026-07-27 an ended page nobody closed manually reported `active` indefinitely. `status: "active"` now genuinely means live — trust it.
 
 ```sh
 tokei-agent pages:list --status active --per-page 20
@@ -170,8 +173,13 @@ tokei-agent pages:list --status active --per-page 20
 
 | Field | Meaning |
 | ----- | ------- |
+| `total_entries` | Count of entry **actions** (`contest_entries` rows) — not people, and not points. **Never narrate this as "signups."** |
+| `total_points_awarded` | Sum of points earned across all entry actions. Not a headcount either. |
+| `status` | The **effective** status (see `pages:list` above) — `completed` once `end_date` passes, whatever is stored. Safe to report as "live" / "finished" directly. |
+| `days_left` | Whole days remaining, computed from `end_date` at read time; **`0` means it has ended**, and the partial final day rounds up so a page closing tonight reads `1`. Only falls back to the stored column when there is no `end_date` at all. Before 2026-07-27 this replayed a stale stored value and could say `30` on a page with a day to go. |
+| `entry_methods[].points` | What each action **actually awards**, including any per-action override the owner configured. Safe to quote to a user. |
 | `description`, `prizes`, `reward_thresholds` | Everything `pages:update` can write, so you can read-modify-write. |
-| `public_url` | The live page URL — no second call needed. |
+| `public_url` | The live page URL — no second call needed. **Can be `null`** when the page has no slug yet (`contest_url` null); check before handing it to your user as a link. |
 | `primary_color` | Brand colour as a CSS value (e.g. `#7d78c6`); `null` means the template default. `settings.color` is a deprecated alias of it. |
 | `card_width` | `max-w-2xl` \| `max-w-3xl` \| `max-w-4xl`; `null` renders as `max-w-2xl`. |
 | `settings.template` | Page skin: `basic-new`, `showcase` or `future`. |
@@ -179,7 +187,7 @@ tokei-agent pages:list --status active --per-page 20
 | `secondary_image` … `fifth_image`, `background_image`, `og_image` | The page's other media slots; `null` when unset. Each writable via its own `pages:update` flag — see the media flags note under `pages:update` below. |
 | `campaign_name`, `project_name` | **Read-only.** `project_name` is the small subheading under the headline; `campaign_name` is the internal dashboard name and never appears on the page. |
 
-`primary_color`, `card_width`, `settings.template` and all seven media fields (`image_video`, `secondary_image`, `third_image`, `fourth_image`, `fifth_image`, `background_image`, `og_image`) are now writable via `pages:update` (see below); `dark_mode_enabled` writes through `--dark-mode` there too, though it isn't itself a field in this table. `campaign_name`/`project_name` remain read-only always.
+`primary_color`, `card_width`, `settings.template` and all seven media fields (`image_video`, `secondary_image`, `third_image`, `fourth_image`, `fifth_image`, `background_image`, `og_image`) are now writable via `pages:update` (see below); `dark_mode_enabled` writes through `--dark-mode` there too, though it isn't itself a field in this table. `campaign_name`/`project_name` remain read-only always. If your user wants a headcount ("how many people entered"), that's neither `total_entries` nor `total_points_awarded` — use `stats`'s `unique_participants` instead.
 
 ```sh
 tokei-agent pages:get 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90
@@ -228,6 +236,13 @@ Example response — the real menu at the time of writing. It grows as the platf
   "success": true,
   "data": [
     {
+      "id": "06743256-2e8e-4ede-a431-f17866fae1f6",
+      "slug": "competition-starter",
+      "name": "Starter — Gleam-style competition giveaway (X, Instagram, TikTok, Facebook entries)",
+      "skin": "basic-new",
+      "entry_method_count": 6
+    },
+    {
       "id": "5f988c4e-3faf-49f0-9ee4-438cb5efc491",
       "slug": "product-hunt",
       "name": "Product Hunt launch — upvote & share drive (Product Hunt, X, LinkedIn actions)",
@@ -235,24 +250,64 @@ Example response — the real menu at the time of writing. It grows as the platf
       "entry_method_count": 5
     },
     {
-      "id": "06743256-2e8e-4ede-a431-f17866fae1f6",
-      "slug": "competition-starter",
-      "name": "Starter — Gleam-style competition giveaway (X, Instagram, TikTok, Facebook entries)",
+      "id": "6ca0bdbc-23d8-4c79-a894-857eea485fbe",
+      "slug": "secret-codes",
+      "name": "Secret Code — unlock entries with a code (QR codes, receipts, printed inserts, events)",
       "skin": "basic-new",
+      "entry_method_count": 0
+    },
+    {
+      "id": "88fde228-8baf-4b31-9b0e-cc243b3cc83d",
+      "slug": "steam-promotion",
+      "name": "A futuristic Steam template for Adding to Steam Wishlists and Playing Steam Games.",
+      "skin": "future",
       "entry_method_count": 6
+    },
+    {
+      "id": "94d70a7a-296a-425a-ab50-e356b4cca68f",
+      "slug": "youtube-contest",
+      "name": "YouTube contest — video giveaway driving YouTube channel visits",
+      "skin": "future",
+      "entry_method_count": 1
     }
   ],
   "rate_limit": { "limit": 60, "remaining": 59, "reset": 1753000000 }
 }
 ```
 
-`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug.
+`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug. A `0` there is not always a stub: `secret-codes` has no social entry actions because its single action *is* the secret code, configured on the page rather than in `entry_methods`. Cloning it gives you the code input switched on but **no codes** — codes are stored per page and are never copied, so the owner adds their own in the dashboard.
 
 What the skins look like — use this to match the user's reference point:
 
 - `basic-new` ("Basic") — the classic giveaway card: entry actions in a clean vertical list, soft pastel styling. This is the format popularized by Gleam — when a user asks for a Gleam-style (or KickoffLabs-style) campaign, this is the closest match. The platform default.
 - `showcase` — a dynamic two-column layout with warm colors and platform-styled buttons. Product-forward — the natural fit for a Product Hunt-style launch page.
 - `future` — a dark, immersive game-style skin for bold, high-impact pages (gaming and tech audiences).
+
+**`actions:catalog`** — every entry-action type Tokei supports: label, description, default points, platform, whether it's trust-based/verifiable, and — for the 25 types writable as an `entry_methods` row — the exact `config` fields `pages:update` accepts for that type. This is the **authoritative** per-type reference; nothing below restates it. Same list for every key (not scoped to your account, no pagination). Flags: `--type <actionType>` (a value matching no action type is `400`).
+
+```sh
+tokei-agent actions:catalog --type twitter_follow
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "label": "Follow on X",
+    "defaultPoints": 3,
+    "platform": "twitter",
+    "trustBased": false,
+    "isEntryMethodRow": true,
+    "fields": [
+      { "key": "username", "type": "string", "required": true,
+        "note": "X/Twitter handle. Checked for presence only — no format validation." }
+    ],
+    "needs": "Requires participant X/Twitter OAuth to be configured on this deployment..."
+  }
+}
+```
+
+A field's `group` marks alternatives — write the FIRST field of the group; the rest are claim-validator aliases that satisfy validation but render a dead button on their own (each carries a `note` saying so). `isEntryMethodRow: false` means the type is not writable as an `entry_methods` row at all (it's enabled via a contest setting or a dedicated route instead) — `needs` says which.
 
 ## Commands (write — need a read+write key)
 
@@ -305,6 +360,26 @@ tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
 ```sh
 tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
   --template showcase --dark-mode true --primary-color "#7d78c6"
+```
+
+**`entry_methods`** — reachable only via `--data` (max 30 rows, ~64KB body cap on this route only, raised from the shared 10KB to fit it). Five things to know:
+
+1. **Full-array replace, same as Rule 3 — always `pages:get` → modify → `pages:update`.** There is no per-row patch: `[]` clears every entry method, and omitting the field leaves the stored array untouched. Two row shapes: an **action row** `{actionType, label, points?, config?, requireVerification?}` — `actionType` must be one of the 25 writable types from `actions:catalog` — or a **link row** with no `actionType`: `{label, points?, link}`. Unknown keys (`icon`, `config.type`, the nine legacy `<platform>Config` duplicates) are stripped, not stored, so echoing back a row you just read is always safe. `icon`/`config.type` are always server-derived from `actionType`; whatever you send for them is ignored.
+2. **`points` may not render as sent.** `0` means unset — the renderer falls back to the type's default. Any type with an `entryValueSettingKey` (see `actions:catalog`) has its displayed points overridden by `settings.<type>_entry_value` when the owner has configured one, and Product Hunt (`producthunt_follow`, `producthunt_vote`) and all three Steam types go further — their points are **hard-substituted with the platform default at render**, unconditionally. Also: **`pages:get` already returns the EFFECTIVE points** (overrides applied), not the raw stored value, so an untouched `pages:get` → `pages:update` round-trip silently persists that effective number into storage in place of whatever was originally configured.
+3. **Some types need a deployment prerequisite — warn the human before adding one.** All 5 `twitter_*` types and `linkedin_share`/`linkedin_post` need participant OAuth configured on this deployment; `discord_join` needs Discord OAuth and has no working verification at all, so its points are awarded on trust regardless; all 3 `steam_*` types need Steam login. `actions:catalog`'s `needs` field says this per type — `null` means no prerequisite. Facebook, Instagram, TikTok, Twitch, Product Hunt, `linkedin_follow`, `linkedin_company_follow` and link rows have none — safe to add without asking.
+4. Draft/publish semantics are unchanged by any of this. Unknown keys are stripped on the way in, never stored.
+5. **Link-row rules:** a label that doesn't start with `"Visit Our "` renders as a non-clickable generic row; the clickable, credited path also requires the page to have a `campaign_url` configured.
+
+```sh
+tokei-agent pages:get "$PAGE" | jq '.data.entry_methods'   # always read first (Rule 3)
+
+# Trust-based (no prerequisite) + conditional (needs X/Twitter OAuth — warn the human
+# first) + a link row, sent together as the COMPLETE replacement array
+tokei-agent pages:update "$PAGE" --data '{"entry_methods":[
+  {"actionType":"tiktok_follow","label":"Follow us on TikTok","points":3,"config":{"username":"tokei"}},
+  {"actionType":"twitter_follow","label":"Follow on X","points":3,"config":{"username":"tokei"}},
+  {"label":"Visit Our Store","points":1,"link":"https://example.com/store"}
+]}'
 ```
 
 **`pages:publish <contestId>`** — sugar over `pages:update` that PATCHes `{"status": "active"}`. Requires an `end_date` in the future — either already stored on the page, or sent in the same call via `--data`. If neither is true, this returns `422 VALIDATION_ERROR` with `details: [{"field": "status", "message": "Publishing requires an end_date in the future..."}]`. Re-publishing an already-active page is a no-op and skips that check. Still accepts `--data` for any other field, merged under the fixed `status` (a `--data` `status` value would override it, but there's no reason to send one here).
@@ -371,7 +446,7 @@ Write commands accept `--data '<json>'` or `--data @file.json` for the raw reque
 | 404    | `NOT_FOUND`           | Resource doesn't exist **or is not owned by this key's account** — ownership failures are masked as 404. `pages:clone --template <slug>` also 404s when the slug matches no template (`error.details` has `field: "template"`). | Verify the id via `pages:list` / `webhooks:list`, or the slug via `templates:list`. Do not retry. For `webhooks:delete`, a 404 usually means already deleted — safe to treat as success. |
 | 409    | `CONFLICT`            | `entries:create`: email already entered. `pages:clone`: idempotency key already used (existing page's id is in `error.details`). | Safe to treat as success in both cases — the desired state already exists. Do not retry.          |
 | 409    | `WINNERS_ALREADY_SELECTED` | `pages:update`: `end_date` was set **or cleared** on a page whose winners have already been drawn. | Do not retry. Tell the human the draw is final — they must clear the winner selection in the dashboard first. Other fields still patch fine; just omit `--end-date`. |
-| 413    | `PAYLOAD_TOO_LARGE`   | Body over the 10KB limit.                                               | Shrink the body. Do not retry as-is.                                                             |
+| 413    | `PAYLOAD_TOO_LARGE`   | Body over the 10KB limit (`pages:update` alone is raised to 64KB, to fit a full `entry_methods` array). | Shrink the body. Do not retry as-is.                                                             |
 | 422    | `VALIDATION_ERROR`    | Body failed validation; `error.details` is an array of `{field, message}`. | Fix exactly the listed fields, then retry once.                                                  |
 | 429    | `RATE_LIMIT_EXCEEDED` | Per-minute limit, the 20/day clone cap, or the 50/day media-ticket cap. | Wait `Retry-After` seconds (in the response headers), then retry with exponential backoff. On the two daily caps, trust `Retry-After` — `rate_limit` in the envelope reports the per-minute window, which will still look healthy. |
 | 5xx    | `INTERNAL_ERROR`      | Server fault.                                                           | Retry with exponential backoff, max 2–3 attempts, then report to the human.                      |
@@ -417,6 +492,7 @@ tokei-agent entries:list <contestId> --email fan@example.com
 tokei-agent surveys:list <contestId> --page 2
 tokei-agent webhooks:list
 tokei-agent templates:list
+tokei-agent actions:catalog
 
 # Create (write key)
 tokei-agent pages:clone --title "T" --template <slug>          # 20/day cap
@@ -431,6 +507,7 @@ tokei-agent pages:update <id> --template showcase --dark-mode true \
 tokei-agent pages:update <id> --image-video <public_url> --og-image <public_url>
 tokei-agent pages:update <id> --data '{"prizes":[...]}'        # replaces the list
 tokei-agent pages:update <id> --data '{"og_image": null}'      # nulls need --data
+tokei-agent pages:update <id> --data '{"entry_methods":[...]}' # replaces the list, max 30, 64KB cap
 
 # Publish state (write key)
 tokei-agent pages:publish <id> --data '{"end_date":"2026-09-01T00:00:00Z"}'
@@ -442,7 +519,7 @@ tokei-agent webhooks:create --url https://you.com/hook --events entry.created  #
 tokei-agent webhooks:delete <webhookId>
 
 # Other
-tokei-agent mcp                       # MCP stdio server (all 17 commands as tools)
+tokei-agent mcp                       # MCP stdio server (all 18 commands as tools)
 tokei-agent --help                    # full flag reference
 tokei-agent --version
 ```

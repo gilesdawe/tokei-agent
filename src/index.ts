@@ -6,9 +6,11 @@ import { request } from "./http.js";
 import type { BinaryFetchLike, FetchLike, HttpMethod } from "./http.js";
 import { createMcpSession } from "./mcp.js";
 import { uploadMedia } from "./media.js";
+import { createTerm, failureMessage, formatCount } from "./ui.js";
+import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.2.2";
+export const VERSION = "0.3.1";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -31,6 +33,10 @@ export interface Io {
   // Line stream driving the `mcp` command. Optional so embedders without a
   // stdin can omit it (the command then reports a usage error).
   stdin?: AsyncIterable<string>;
+  // Raw stream access for the interactive UI. Optional: when absent — tests,
+  // embedders, MCP — the UI is inert and output is byte-identical to the
+  // JSON-only behaviour. Distinct from `stdout`, which is a *line* writer.
+  term?: TermHost;
 }
 
 interface FlagSpec {
@@ -128,6 +134,10 @@ const COMMANDS: Record<string, CommandSpec> = {
   "templates:list": {
     buildPath: () => "/templates",
     flags: [],
+  },
+  "actions:catalog": {
+    buildPath: () => "/actions/catalog",
+    flags: [{ name: "type", param: "type", kind: "string" }],
   },
   "pages:clone": {
     method: "POST",
@@ -233,6 +243,114 @@ const COMMANDS: Record<string, CommandSpec> = {
     flags: [],
   },
 };
+
+// ---------------------------------------------------------------------------
+// Presentation only. Kept out of COMMANDS so the API spec table stays a pure
+// description of the wire protocol.
+//
+// Copy uses "page", matching README.md and the pages:* command names — the
+// `/contests` path and `contestId` positional are the wire format, and --mode
+// also accepts sharing_only/gamification, which are not contests.
+//
+// One step per real request: the CLI issues exactly one HTTP call per command
+// (media:upload is the sole two-phase flow), so there is never more than one
+// tick to show. Anything more would be invented progress.
+interface CommandCopy {
+  pending: string;
+  done: string | ((payload: unknown) => string);
+}
+
+/**
+ * How many records the response covers.
+ *
+ * Prefers `pagination.total_count` over `data.length`: list endpoints default
+ * to 25 per page, so `data.length` silently caps the reported figure at the
+ * page size ("25 pages" when there are 30). Falls back to the array length for
+ * unpaginated responses.
+ */
+function dataCount(payload: unknown): number | undefined {
+  if (payload === null || typeof payload !== "object") return undefined;
+  const total = (payload as { pagination?: { total_count?: unknown } }).pagination?.total_count;
+  if (typeof total === "number") return total;
+  const data = (payload as { data?: unknown }).data;
+  return Array.isArray(data) ? data.length : undefined;
+}
+
+function counted(noun: string, fallback: string): (payload: unknown) => string {
+  return (payload) => {
+    const n = dataCount(payload);
+    if (n === undefined) return fallback;
+    return `${formatCount(n)} ${n === 1 ? noun : `${noun}s`}`;
+  };
+}
+
+const COPY: Record<string, CommandCopy> = {
+  me: { pending: "Verifying your API key", done: "Signed in" },
+  "pages:list": { pending: "Fetching your pages", done: counted("page", "Pages loaded") },
+  "pages:get": { pending: "Loading page", done: "Page loaded" },
+  "pages:clone": { pending: "Creating page from template", done: "Page created" },
+  "pages:update": { pending: "Saving changes", done: "Changes saved" },
+  "pages:publish": { pending: "Publishing page", done: "Page is live" },
+  "pages:unpublish": { pending: "Returning page to draft", done: "Page is a draft" },
+  "templates:list": {
+    pending: "Fetching templates",
+    done: counted("template", "Templates loaded"),
+  },
+  "actions:catalog": { pending: "Fetching action catalog", done: "Catalog loaded" },
+  stats: { pending: "Gathering analytics", done: "Analytics ready" },
+  leaderboard: { pending: "Ranking entrants", done: "Leaderboard ready" },
+  "entries:list": { pending: "Fetching entries", done: counted("entry", "Entries loaded") },
+  "entries:create": { pending: "Recording entry", done: "Entry recorded" },
+  "surveys:list": {
+    pending: "Fetching survey responses",
+    done: counted("response", "Responses loaded"),
+  },
+  "webhooks:list": { pending: "Fetching webhooks", done: counted("webhook", "Webhooks loaded") },
+  "webhooks:create": { pending: "Registering webhook", done: "Webhook registered" },
+  "webhooks:delete": { pending: "Removing webhook", done: "Webhook removed" },
+};
+
+/**
+ * The account summary shown after `me`. Renders only fields the payload
+ * actually contains — /me returns no permission or access flags, so nothing
+ * resembling a capability checklist can be shown truthfully.
+ */
+function renderAccountSummary(term: Term, payload: unknown): void {
+  const data =
+    payload !== null && typeof payload === "object"
+      ? ((payload as { data?: unknown }).data as Record<string, unknown> | undefined)
+      : undefined;
+  if (!data) return;
+
+  const rows: SummaryRow[] = [];
+  const plan = data.plan;
+  if (typeof plan === "string") rows.push({ label: "Plan", value: plan.toUpperCase() });
+
+  const usage = data.api_usage as Record<string, unknown> | undefined;
+  if (usage && typeof usage.requests_today === "number" && typeof usage.daily_limit === "number") {
+    rows.push({
+      label: "Requests today",
+      value: `${formatCount(usage.requests_today)} / ${formatCount(usage.daily_limit)}`,
+    });
+  }
+  if (typeof data.active_contests === "number") {
+    rows.push({ label: "Active pages", value: formatCount(data.active_contests) });
+  }
+  const rl = (payload as { rate_limit?: { remaining?: unknown; limit?: unknown } }).rate_limit;
+  if (rl && typeof rl.remaining === "number" && typeof rl.limit === "number") {
+    rows.push({
+      label: "Rate limit",
+      value: `${formatCount(rl.remaining)} / ${formatCount(rl.limit)} remaining`,
+    });
+  }
+
+  const email = typeof data.email === "string" ? data.email : undefined;
+  term.summary({
+    welcome: email ? `Welcome back, ${email}` : undefined,
+    rows,
+    closing: "Tokei Agent ready",
+  });
+}
 
 const COMMAND_NAMES = Object.keys(COMMANDS);
 
@@ -391,6 +509,11 @@ Commands (read):
   templates:list              List the platform's named starting points (id,
                               slug, name, skin, entry_method_count) — clone one
                               by slug with pages:clone --template <slug>.
+  actions:catalog             List every entry-action type Tokei supports
+                              (label, description, points, platform, whether
+                              it's trust-based/verifiable) — same list for
+                              every key.
+                                --type <actionType>  (unknown type is a 400)
 
 Commands (write — need a read+write API key):
   pages:clone                 Create a promotion by cloning one you own; omit
@@ -567,12 +690,37 @@ export async function main(argv: string[], io: Io): Promise<number> {
 
   const baseUrl = io.env.TOKEI_API_URL || DEFAULT_BASE_URL;
 
-  const { payload, exitCode } = await request(
+  // Presentation only. `term` is undefined for pipes, redirects, CI, MCP and
+  // tests, in which case this whole block collapses to the original single
+  // io.stdout() call below.
+  const copy = COPY[command];
+  const term = copy ? createTerm(io.term) : undefined;
+  // The full wordmark is reserved for `me`; routine commands get a step line.
+  term?.start(copy!.pending, { logo: command === "me" });
+
+  const { payload, exitCode, status } = await request(
     { baseUrl, apiKey, path: spec.buildPath(positional), query, method: spec.method, body },
     io.fetchImpl,
   );
 
-  io.stdout(JSON.stringify(payload, null, 2));
+  if (term) {
+    if (exitCode === 0) {
+      const done = copy!.done;
+      await term.finish("done", typeof done === "function" ? done(payload) : done);
+      if (command === "me") {
+        renderAccountSummary(term, payload);
+      } else {
+        io.stdout(JSON.stringify(payload, null, 2));
+      }
+    } else {
+      // The ✗ line is a summary, never a replacement: the full error object
+      // still goes to stdout so it stays inspectable.
+      await term.finish("fail", failureMessage(status, payload));
+      io.stdout(JSON.stringify(payload, null, 2));
+    }
+  } else {
+    io.stdout(JSON.stringify(payload, null, 2));
+  }
 
   if (spec.warnSecretOnce && exitCode === 0) {
     const data = (payload as { data?: unknown }).data;

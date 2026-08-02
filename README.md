@@ -40,7 +40,9 @@ tokei-agent stats <contestId>        # analytics for one page
 
 Every command prints JSON to stdout with a top-level `rate_limit` object. Exit codes: `0` success, `1` API/network error, `2` usage error (JSON on stderr).
 
-> **Known issue — exit codes on Node 24 / Windows (fixed in 0.2.3).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade.
+> **Interactive output (0.3.2+).** When stdout is an interactive terminal, the CLI renders a banner and a human-readable summary instead of raw JSON. When stdout is a pipe, a redirect, CI, or the `mcp` transport, it prints exactly the JSON it always has — so agents, scripts and MCP clients are unaffected. Set `TOKEI_OUTPUT=json` to force JSON at a terminal too; `NO_COLOR` disables colour and animation, and `TOKEI_NO_ANIM=1` keeps the colour but stops the movement.
+
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. Note that the published 0.3.0 package misreports `--version` as `0.2.2` (a labelling slip, not the old code): if `npm view tokei-agent version` says 0.3.0, you have the fix.
 
 ## Commands
 
@@ -57,6 +59,7 @@ Read (any key):
 | `surveys:list <contestId>` | Survey responses                                            |
 | `webhooks:list`            | List webhook subscriptions                                  |
 | `templates:list`           | The platform's named starting points, for `pages:clone --template` |
+| `actions:catalog`          | Every entry-action type Tokei supports — `--type <actionType>`     |
 
 Write (needs a read+write key):
 
@@ -64,7 +67,7 @@ Write (needs a read+write key):
 | ----------------------------- | ------------------------------------------------------------------------ |
 | `pages:clone`                 | Create a page by cloning one you own, a named template, or the starter. 20/day cap |
 | `media:upload <file>`         | Upload an image or video, get back a `public_url` for `pages:update`. ≤5MB per file (video too) |
-| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance, and media |
+| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance, media, and entry actions (`entry_methods`) |
 | `pages:publish <contestId>`   | Take a page live (needs a future `end_date`)                             |
 | `pages:unpublish <contestId>` | Back to draft — blocks new signups, but the page still renders publicly  |
 | `entries:create <contestId>`  | Add a signup                                                             |
@@ -78,6 +81,9 @@ tokei-agent pages:clone --title "Spring Launch Waitlist" --source <promotionId>
 tokei-agent pages:update <contestId> --end-date 2026-09-01T00:00:00Z
 tokei-agent media:upload ./hero.png
 tokei-agent pages:update <contestId> --image-video <public_url from the upload above>
+tokei-agent actions:catalog --type twitter_follow                  # see what a type accepts
+tokei-agent pages:update <contestId> \
+  --data '{"entry_methods":[{"actionType":"tiktok_follow","label":"Follow us on TikTok","points":3,"config":{"username":"tokei"}}]}'
 ```
 
 ## MCP server
@@ -112,6 +118,57 @@ Or in JSON config:
 ## Agents, human in the loop
 
 Tokei is built so agents draft and humans approve: give monitoring agents a read-only key, reserve read+write keys for agents that genuinely need to change things, and set key expiry. New webhook subscriptions created via the API trigger a security notification to the account owner.
+
+## Privacy Policy
+
+Full policy: https://tokei.io/privacy
+
+### Data collection practices
+
+`tokei-agent` is a thin client for the Tokei v1 REST API. It collects no data of
+its own: there is no telemetry, no analytics, no crash reporting, and no
+phone-home of any kind.
+
+It reads exactly two inputs from your environment — `TOKEI_API_KEY` and the
+optional `TOKEI_API_URL` — plus the arguments you pass on the command line (or
+the arguments an MCP client passes to a tool call). For `media:upload` it also
+reads the bytes of the local file you name.
+
+### Usage and storage
+
+Your API key is used solely as an `Authorization: Bearer` header on requests to
+your Tokei account. Command arguments become the request path, query string, or
+JSON body. Nothing is written to disk: the CLI creates no config file, cache,
+credential store, or log file, and holds nothing after the process exits.
+
+API responses — which can include entrant email addresses, survey answers, and
+analytics — are printed as JSON to stdout. From that point they are handled by
+whatever invoked the CLI (your shell, your scripts, or your AI agent and its
+conversation history). Treat that output as the personal data it is.
+
+### Third-party sharing
+
+Nothing is sold or shared with third parties. Data is transmitted only to:
+
+- **Tokei** (`https://tokei.io`, or the host you set in `TOKEI_API_URL`) — every
+  command, to serve your request against your own account.
+- **Tokei's object storage provider** — `media:upload` only. The API returns a
+  short-lived signed upload URL and the CLI PUTs your file bytes straight to it;
+  the file becomes a public asset on your promotion page.
+
+The CLI contacts no other host.
+
+### Data retention
+
+The CLI retains nothing. Data held in your Tokei account — promotions, entries,
+survey responses — is retained under the Tokei privacy policy above, and you can
+request access or deletion there. API keys are created, scoped, expired, and
+revoked by you at Dashboard → Settings → API Keys; revoking a key immediately
+stops all access through it.
+
+### Contact information
+
+Tokei — https://tokei.io/privacy — support@tokei.io
 
 ## Docs
 

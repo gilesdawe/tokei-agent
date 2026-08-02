@@ -20,11 +20,17 @@ const INSTRUCTIONS = `Tokei (tokei.io) pre-launch campaign tools. Terminology: t
 
 export interface ToolDef {
   name: string;
+  title?: string;
   description: string;
   inputSchema: {
     type: "object";
     properties: Record<string, unknown>;
     required?: string[];
+  };
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
   };
 }
 
@@ -54,29 +60,37 @@ const enc = encodeURIComponent;
 
 const PAGINATION = {
   page: { type: "integer", minimum: 1, description: "Page number (1-based)." },
-  per_page: { type: "integer", minimum: 1, maximum: 100, description: "Results per page (max 100)." },
+  per_page: {
+    type: "integer",
+    minimum: 1,
+    maximum: 100,
+    description: "Results per page (max 100).",
+  },
 };
 
 const CONTEST_ID = {
   type: "string",
-  description: 'The page id (API: contest/promotion id, a UUID). Get it from pages_list.',
+  description: "The page id (API: contest/promotion id, a UUID). Get it from pages_list.",
 };
 
 const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "me",
+      title: "Verify API key",
       description:
         "Verify the API key and return account information: plan, API usage today, active page count.",
       inputSchema: { type: "object", properties: {} },
+      annotations: { readOnlyHint: true },
     },
     buildPath: () => "/me",
   },
   {
     def: {
       name: "pages_list",
+      title: "List promotion pages",
       description:
-        'List your pages (API: promotions/contests) with status, entry counts, and public URLs.',
+        "List your pages (API: promotions/contests) with status, entry counts, and public URLs.",
       inputSchema: {
         type: "object",
         properties: {
@@ -85,6 +99,7 @@ const TOOL_SPECS: ToolSpec[] = [
           ...PAGINATION,
         },
       },
+      annotations: { readOnlyHint: true },
     },
     buildPath: () => "/contests",
     queryParams: ["status", "mode", "page", "per_page"],
@@ -92,6 +107,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "pages_get",
+      title: "Get promotion page",
       description:
         "Get one page in full: description, prizes, reward_thresholds, dates, public_url.",
       inputSchema: {
@@ -99,6 +115,7 @@ const TOOL_SPECS: ToolSpec[] = [
         properties: { contest_id: CONTEST_ID },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: true },
     },
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}`,
@@ -106,12 +123,14 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "stats",
+      title: "Get page analytics",
       description: "Aggregated analytics for a page: signups, entries, referrals, top actions.",
       inputSchema: {
         type: "object",
         properties: { contest_id: CONTEST_ID },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: true },
     },
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}/analytics`,
@@ -119,12 +138,14 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "leaderboard",
+      title: "Get page leaderboard",
       description: "Participants of a page ranked by entry points.",
       inputSchema: {
         type: "object",
         properties: { contest_id: CONTEST_ID, ...PAGINATION },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: true },
     },
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}/leaderboard`,
@@ -133,7 +154,9 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "entries_list",
-      description: "List a page's entries (signups). Filter by exact email with the email argument.",
+      title: "List entries",
+      description:
+        "List a page's entries (signups). Filter by exact email with the email argument.",
       inputSchema: {
         type: "object",
         properties: {
@@ -143,6 +166,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: true },
     },
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}/entries`,
@@ -151,12 +175,14 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "surveys_list",
+      title: "List survey responses",
       description: "List survey responses for a page.",
       inputSchema: {
         type: "object",
         properties: { contest_id: CONTEST_ID, ...PAGINATION },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: true },
     },
     pathParam: "contest_id",
     buildPath: (id) => `/contests/${enc(id!)}/survey-responses`,
@@ -165,15 +191,38 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "templates_list",
+      title: "List templates",
       description:
         "List the platform's named starting points: id, slug, name, skin (page layout), and entry_method_count. Same list for every key. Clone one by slug with pages_clone's template argument.",
       inputSchema: { type: "object", properties: {} },
+      annotations: { readOnlyHint: true },
     },
     buildPath: () => "/templates",
   },
   {
     def: {
+      name: "actions_catalog",
+      title: "List entry-action catalog",
+      description:
+        "List every entry-action type entry actions can use: label, description, default points, platform, and whether it's trust-based / API-verifiable / manually verifiable. Same catalog for every key — not scoped to your account. Optional type argument returns just that one action type's entry; a value matching no known type is a 400.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            description: "Filter to one action type, e.g. twitter_follow. Unknown values return 400.",
+          },
+        },
+      },
+      annotations: { readOnlyHint: true },
+    },
+    buildPath: () => "/actions/catalog",
+    queryParams: ["type"],
+  },
+  {
+    def: {
       name: "pages_clone",
+      title: "Create page from clone or template",
       description:
         "Create a page by cloning one you own (source_promotion_id), a named platform template (template — list slugs with templates_list), or the platform starter template (omit both). Sending both source_promotion_id and template is a 422. Template, theme, and entry methods copy verbatim from the source. Capped at 20 API-created pages per account per UTC day (429). Needs a read+write key.",
       inputSchema: {
@@ -197,7 +246,8 @@ const TOOL_SPECS: ToolSpec[] = [
           prize: {
             type: "string",
             maxLength: 200,
-            description: "Replaces the first prize's name, or creates a prize if the source has none.",
+            description:
+              "Replaces the first prize's name, or creates a prize if the source has none.",
           },
           end_date: { type: "string", description: "ISO 8601 datetime in the future." },
           campaign_url: { type: "string", maxLength: 500, description: "HTTPS URL." },
@@ -221,6 +271,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["title"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     method: "POST",
     buildPath: () => "/promotions",
@@ -229,6 +280,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "pages_update",
+      title: "Update promotion page",
       description:
         "Update a page: title, description, start/end dates, prizes, reward tiers, appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes and reward_thresholds each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
       inputSchema: {
@@ -275,7 +327,10 @@ const TOOL_SPECS: ToolSpec[] = [
             enum: ["basic-new", "showcase", "future"],
             description: "Page skin/layout template.",
           },
-          dark_mode_enabled: { type: "boolean", description: "Enable dark mode on the public page." },
+          dark_mode_enabled: {
+            type: "boolean",
+            description: "Enable dark mode on the public page.",
+          },
           primary_color: {
             type: ["string", "null"],
             description: "Hex colour, e.g. #7d78c6. null resets to the template default.",
@@ -283,7 +338,8 @@ const TOOL_SPECS: ToolSpec[] = [
           card_width: {
             type: "string",
             enum: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
-            description: "Content column width. Friendly names map to Tailwind max-w classes server-side.",
+            description:
+              "Content column width. Friendly names map to Tailwind max-w classes server-side.",
           },
           image_video: {
             type: ["string", "null"],
@@ -292,19 +348,23 @@ const TOOL_SPECS: ToolSpec[] = [
           },
           secondary_image: {
             type: ["string", "null"],
-            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+            description:
+              "Additional layout block image URL (same host allowlist as image_video). null clears it.",
           },
           third_image: {
             type: ["string", "null"],
-            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+            description:
+              "Additional layout block image URL (same host allowlist as image_video). null clears it.",
           },
           fourth_image: {
             type: ["string", "null"],
-            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+            description:
+              "Additional layout block image URL (same host allowlist as image_video). null clears it.",
           },
           fifth_image: {
             type: ["string", "null"],
-            description: "Additional layout block image URL (same host allowlist as image_video). null clears it.",
+            description:
+              "Additional layout block image URL (same host allowlist as image_video). null clears it.",
           },
           background_image: {
             type: ["string", "null"],
@@ -319,6 +379,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true },
     },
     method: "PATCH",
     pathParam: "contest_id",
@@ -328,6 +389,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "pages_publish",
+      title: "Publish page",
       description:
         "Publish a page (status -> active), making it live at its public_url. Requires an end_date in the future — either already stored on the page or supplied here — otherwise returns 422 VALIDATION_ERROR. Re-publishing an already-active page is a no-op and skips that check. Needs a read+write key.",
       inputSchema: {
@@ -342,6 +404,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     method: "PATCH",
     pathParam: "contest_id",
@@ -352,6 +415,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "pages_unpublish",
+      title: "Unpublish page",
       description:
         "Unpublish a page (status -> draft): blocks new entries only — existing entries and entrants are untouched, nothing is deleted. IMPORTANT: a draft page still renders publicly at its URL; unpublishing does not hide it from anyone with the link, it only stops new signups. Tell your user this before they rely on it to take a page down. Needs a read+write key.",
       inputSchema: {
@@ -359,6 +423,7 @@ const TOOL_SPECS: ToolSpec[] = [
         properties: { contest_id: CONTEST_ID },
         required: ["contest_id"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     method: "PATCH",
     pathParam: "contest_id",
@@ -369,7 +434,9 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "entries_create",
-      description: "Add an entry (signup) to a page. Duplicate email for the page returns 409 — the person is already signed up. Needs a read+write key.",
+      title: "Create entry",
+      description:
+        "Add an entry (signup) to a page. Duplicate email for the page returns 409 — the person is already signed up. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -382,7 +449,10 @@ const TOOL_SPECS: ToolSpec[] = [
           },
           points: {
             type: "integer",
-            description: "Points to award; defaults to the matching entry method's points, or 5.",
+            minimum: 0,
+            maximum: 10000,
+            description:
+              "Points to award; defaults to the matching entry method's points, or 5. Max 10000.",
           },
           value: { type: "string", description: 'Context string, e.g. "Order #12345".' },
           metadata: {
@@ -392,6 +462,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["contest_id", "email"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     method: "POST",
     pathParam: "contest_id",
@@ -401,9 +472,11 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "webhooks_list",
+      title: "List webhooks",
       description:
         "List webhook subscriptions. failure_count is consecutive failed deliveries — auto-disabled at 10.",
       inputSchema: { type: "object", properties: { ...PAGINATION } },
+      annotations: { readOnlyHint: true },
     },
     buildPath: () => "/webhooks",
     queryParams: ["page", "per_page"],
@@ -411,6 +484,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "webhooks_create",
+      title: "Create webhook subscription",
       description:
         "Subscribe an HTTPS endpoint to events. The response contains the whsec_ signing secret EXACTLY ONCE — store it immediately, it cannot be retrieved again. Deliveries are HMAC-SHA256 signed (X-TOKEI-Signature). Needs a read+write key.",
       inputSchema: {
@@ -426,6 +500,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["url", "events"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     method: "POST",
     buildPath: () => "/webhooks",
@@ -435,6 +510,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "webhooks_delete",
+      title: "Delete webhook subscription",
       description:
         "Delete a webhook subscription. A 404 usually means it was already deleted — safe to treat as success.",
       inputSchema: {
@@ -444,6 +520,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["webhook_id"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true },
     },
     method: "DELETE",
     pathParam: "webhook_id",
@@ -452,6 +529,7 @@ const TOOL_SPECS: ToolSpec[] = [
   {
     def: {
       name: "media_upload",
+      title: "Upload media file",
       description:
         "Upload an image or video from local disk (two-step: this call requests a signed upload ticket, then PUTs the file bytes to it) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. The signed-upload bucket caps uploads at 5MB — applies to video as well as images, so a >5MB file fails at the PUT step with a 413 from storage, not from Tokei. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
       inputSchema: {
@@ -459,7 +537,8 @@ const TOOL_SPECS: ToolSpec[] = [
         properties: {
           file_path: {
             type: "string",
-            description: "Path to the local file to upload (read from disk where this MCP server runs).",
+            description:
+              "Path to the local file to upload (read from disk where this MCP server runs).",
           },
           content_type: {
             type: "string",
@@ -469,6 +548,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["file_path"],
       },
+      annotations: { readOnlyHint: false, destructiveHint: false },
     },
     // Unused — media_upload bypasses the generic single-request path via
     // `handler` below, but buildPath is a required field on ToolSpec.
@@ -478,7 +558,8 @@ const TOOL_SPECS: ToolSpec[] = [
       if (typeof filePath !== "string" || filePath.length === 0) {
         return toolError("file_path must be a non-empty string");
       }
-      const contentTypeOverride = typeof args.content_type === "string" ? args.content_type : undefined;
+      const contentTypeOverride =
+        typeof args.content_type === "string" ? args.content_type : undefined;
       // callTool has already confirmed TOKEI_API_KEY is set before reaching
       // any handler.
       const apiKey = io.env.TOKEI_API_KEY!;
@@ -537,7 +618,7 @@ function toolError(message: string): ToolResult {
 async function callTool(
   spec: ToolSpec,
   args: Record<string, unknown>,
-  io: Io,
+  io: Io
 ): Promise<ToolResult> {
   for (const name of spec.def.inputSchema.required ?? []) {
     if (args[name] === undefined) {
@@ -548,7 +629,7 @@ async function callTool(
   const apiKey = io.env.TOKEI_API_KEY;
   if (!apiKey) {
     return toolError(
-      "TOKEI_API_KEY is not set. Create a key at https://tokei.io (Dashboard, Settings, API Keys) and set it in this MCP server's environment.",
+      "TOKEI_API_KEY is not set. Create a key at https://tokei.io (Dashboard, Settings, API Keys) and set it in this MCP server's environment."
     );
   }
 
@@ -585,12 +666,10 @@ async function callTool(
       method: spec.method,
       body,
     },
-    io.fetchImpl,
+    io.fetchImpl
   );
 
-  const content: ToolResult["content"] = [
-    { type: "text", text: JSON.stringify(payload, null, 2) },
-  ];
+  const content: ToolResult["content"] = [{ type: "text", text: JSON.stringify(payload, null, 2) }];
 
   if (spec.warnSecretOnce && exitCode === 0) {
     const data = (payload as { data?: unknown }).data;

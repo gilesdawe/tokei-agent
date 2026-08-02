@@ -68,6 +68,11 @@ export interface RequestOptions {
 export interface RequestResult {
   payload: unknown;
   exitCode: 0 | 1;
+  // HTTP status, or undefined when the request never reached a response
+  // (network/DNS/timeout). Presentation-only: lets the interactive UI describe
+  // a failure accurately instead of guessing. Never affects payload or exit
+  // code.
+  status?: number;
 }
 
 function extractRateLimit(res: HttpResponse): RateLimit | null {
@@ -134,11 +139,11 @@ export async function request(
   const success = res.status >= 200 && res.status < 300;
 
   if (success) {
-    return { payload: augment(parsed, rateLimit), exitCode: 0 };
+    return { payload: augment(parsed, rateLimit), exitCode: 0, status: res.status };
   }
 
   if (isJson) {
-    return { payload: augment(parsed, rateLimit), exitCode: 1 };
+    return { payload: augment(parsed, rateLimit), exitCode: 1, status: res.status };
   }
 
   return {
@@ -148,5 +153,6 @@ export async function request(
       rate_limit: rateLimit,
     },
     exitCode: 1,
+    status: res.status,
   };
 }

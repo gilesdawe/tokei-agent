@@ -12,6 +12,28 @@ main(process.argv.slice(2), {
   fetchImpl: fetch,
   stdout: (line) => process.stdout.write(line + "\n"),
   stderr: (line) => process.stderr.write(line + "\n"),
+  // Raw stream access for the interactive UI. src/ has no @types/node and
+  // never touches `process`, so every environment fact is injected here.
+  // isTTY is false for pipes, redirects and MCP, which is what keeps stdout
+  // pure JSON everywhere except a real human terminal.
+  term: {
+    write: (chunk) => process.stdout.write(chunk),
+    isTTY: Boolean(process.stdout.isTTY),
+    columns: process.stdout.columns,
+    env: process.env,
+    platform: process.platform,
+    onInterrupt: (handler) => {
+      const onSig = () => {
+        handler();
+        process.removeListener("SIGINT", onSig);
+        // Re-raise so the shell sees a normal Ctrl+C. Never process.exit():
+        // see the teardown note in .finally below.
+        process.kill(process.pid, "SIGINT");
+      };
+      process.on("SIGINT", onSig);
+      return () => process.removeListener("SIGINT", onSig);
+    },
+  },
   readFile: (path) => readFileSync(path, "utf8"),
   // media:upload's file-bytes read and step-2 signed-URL PUT. A Buffer IS a
   // Uint8Array, so readFileSync's return value satisfies readFileBytes as-is.
@@ -45,6 +67,9 @@ main(process.argv.slice(2), {
       rl.close();
       if (typeof process.stdin.unref === "function") process.stdin.unref();
     }
+    // Belt-and-braces cursor restore: the UI restores it on every path of its
+    // own, but an unexpected throw must never leave a TTY with a hidden cursor.
+    if (process.stdout.isTTY) process.stdout.write("\x1b[?25h");
     // Backstop for a stray handle (e.g. a keep-alive socket) holding the loop
     // open: force the recorded code after a grace period. unref() so the timer
     // itself never keeps the process alive.

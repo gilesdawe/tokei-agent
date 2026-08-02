@@ -1,5 +1,5 @@
 /** @jest-environment node */
-import { main } from "../index.js";
+import { main, VERSION } from "../index.js";
 import type { Io } from "../index.js";
 import type { HttpResponse } from "../http.js";
 
@@ -53,6 +53,66 @@ function harness(opts: {
 function lastUrl(h: Harness): URL {
   return new URL(h.calls[h.calls.length - 1].url);
 }
+
+/**
+ * A harness with an interactive terminal attached, so the presentation layer
+ * runs. Everything else in this file deliberately omits `term`, which is what
+ * proves stdout stays pure JSON for agents, pipes, CI and MCP.
+ */
+function ttyHarness(opts: Parameters<typeof harness>[0] = {}): Harness & { screen: string[] } {
+  const h = harness(opts);
+  const screen: string[] = [];
+  (h.io as Io & { term?: unknown }).term = {
+    write: (c: string) => screen.push(c),
+    isTTY: true,
+    columns: 120,
+    env: {},
+    platform: "linux",
+  };
+  return { ...h, screen };
+}
+
+describe("interactive summary counts", () => {
+  it("reports the paginated total, not the page size", async () => {
+    // data.length caps at per_page (25), so a 30-record result would otherwise
+    // be announced as "25 pages".
+    const h = ttyHarness({
+      response: okRes({
+        success: true,
+        data: Array.from({ length: 25 }, (_, i) => ({ id: String(i) })),
+        pagination: { page: 1, per_page: 25, total_pages: 2, total_count: 30 },
+      }),
+    });
+    const code = await main(["pages:list"], h.io);
+    expect(code).toBe(0);
+    const text = h.screen.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""); // eslint-disable-line no-control-regex
+    expect(text).toContain("30 pages");
+    expect(text).not.toContain("25 pages");
+  });
+
+  it("falls back to the array length when there is no pagination block", async () => {
+    const h = ttyHarness({
+      response: okRes({ success: true, data: [{ id: "a" }, { id: "b" }, { id: "c" }] }),
+    });
+    await main(["templates:list"], h.io);
+    const text = h.screen.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""); // eslint-disable-line no-control-regex
+    expect(text).toContain("3 templates");
+  });
+
+  it("singularises a count of one", async () => {
+    const h = ttyHarness({
+      response: okRes({
+        success: true,
+        data: [{ id: "a" }],
+        pagination: { page: 1, per_page: 25, total_pages: 1, total_count: 1 },
+      }),
+    });
+    await main(["pages:list"], h.io);
+    const text = h.screen.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""); // eslint-disable-line no-control-regex
+    expect(text).toContain("1 page");
+    expect(text).not.toContain("1 pages");
+  });
+});
 
 describe("main — command routing", () => {
   it("me -> GET /me", async () => {
@@ -122,6 +182,24 @@ describe("main — command routing", () => {
     const url = lastUrl(h);
     expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/templates");
     expect(h.calls[0].init.method).toBe("GET");
+  });
+
+  it("actions:catalog -> GET /actions/catalog, no --type -> no query param", async () => {
+    const h = harness();
+    const code = await main(["actions:catalog"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/actions/catalog");
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(url.searchParams.get("type")).toBeNull();
+  });
+
+  it("actions:catalog --type maps to the ?type= query param", async () => {
+    const h = harness();
+    const code = await main(["actions:catalog", "--type", "twitter_follow"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.searchParams.get("type")).toBe("twitter_follow");
   });
 
   it("honours the TOKEI_API_URL override", async () => {
@@ -239,14 +317,16 @@ describe("main — help and version", () => {
     const h = harness();
     const code = await main(["--version"], h.io);
     expect(code).toBe(0);
-    expect(h.out.join("\n").trim()).toBe("0.2.2");
+    // Asserted against the constant, not a literal, so a release bump doesn't
+    // need a test edit. version.test.ts is what pins VERSION to the manifests.
+    expect(h.out.join("\n").trim()).toBe(VERSION);
   });
 
   it("-v prints the version, exit 0", async () => {
     const h = harness();
     const code = await main(["-v"], h.io);
     expect(code).toBe(0);
-    expect(h.out.join("\n").trim()).toBe("0.2.2");
+    expect(h.out.join("\n").trim()).toBe(VERSION);
   });
 });
 
@@ -675,6 +755,15 @@ describe("main — write commands", () => {
     expect(text).toContain("templates:list");
     expect(text).toContain("--template");
     expect(text).toContain("--source");
+  });
+
+  it("--help mentions actions:catalog and its --type flag", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("actions:catalog");
+    expect(text).toContain("--type");
   });
 
   it("--help mentions the pages:update appearance flags, including narrow|medium|wide for --card-width", async () => {

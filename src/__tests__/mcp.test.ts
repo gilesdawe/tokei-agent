@@ -148,7 +148,7 @@ describe("createMcpSession — lifecycle / protocol", () => {
 });
 
 describe("createMcpSession — tools/list", () => {
-  it("lists exactly the 17 tools", async () => {
+  it("lists exactly the 18 tools", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
     const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -163,6 +163,7 @@ describe("createMcpSession — tools/list", () => {
         "entries_list",
         "surveys_list",
         "templates_list",
+        "actions_catalog",
         "pages_clone",
         "pages_update",
         "pages_publish",
@@ -181,6 +182,20 @@ describe("createMcpSession — tools/list", () => {
     }
   });
 
+  it("every tool has a title and readOnlyHint/destructiveHint annotations (Connectors Directory requirement)", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    for (const tool of res.result.tools as any[]) {
+      expect(typeof tool.title).toBe("string");
+      expect(tool.title.length).toBeGreaterThan(0);
+      expect(typeof tool.annotations?.readOnlyHint).toBe("boolean");
+      if (tool.annotations.readOnlyHint === false) {
+        expect(typeof tool.annotations.destructiveHint).toBe("boolean");
+      }
+    }
+  });
+
   it("required fields are declared on the relevant tools", () => {
     const byName = (name: string) => TOOLS.find((t) => t.name === name)!;
     expect(byName("pages_get").inputSchema.required).toEqual(["contest_id"]);
@@ -194,6 +209,8 @@ describe("createMcpSession — tools/list", () => {
     expect(meRequired === undefined || meRequired.length === 0).toBe(true);
     const templatesListRequired = byName("templates_list").inputSchema.required;
     expect(templatesListRequired === undefined || templatesListRequired.length === 0).toBe(true);
+    const actionsCatalogRequired = byName("actions_catalog").inputSchema.required;
+    expect(actionsCatalogRequired === undefined || actionsCatalogRequired.length === 0).toBe(true);
   });
 
   it("pages_clone advertises a template input (alternative to source_promotion_id)", () => {
@@ -343,6 +360,36 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/templates");
     expect(h.calls[0].init.method).toBe("GET");
     expect(h.calls[0].init.body).toBeUndefined();
+  });
+
+  it("actions_catalog -> GET /actions/catalog, no query when type omitted, no body", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "actions_catalog", arguments: {} },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/actions/catalog");
+    expect(url.searchParams.get("type")).toBeNull();
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(h.calls[0].init.body).toBeUndefined();
+  });
+
+  it("actions_catalog maps the optional type argument to ?type=", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "actions_catalog", arguments: { type: "twitter_follow" } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/actions/catalog");
+    expect(url.searchParams.get("type")).toBe("twitter_follow");
   });
 
   it("pages_clone with a template argument POSTs {title, template}", async () => {
@@ -696,7 +743,7 @@ describe("createMcpSession — tools/call errors", () => {
     });
     expect(initRes.result.protocolVersion).toBe("2025-06-18");
     const listRes = await rpc(session, { jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(listRes.result.tools.length).toBe(17);
+    expect(listRes.result.tools.length).toBe(18);
   });
 });
 
