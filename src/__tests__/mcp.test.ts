@@ -148,7 +148,7 @@ describe("createMcpSession — lifecycle / protocol", () => {
 });
 
 describe("createMcpSession — tools/list", () => {
-  it("lists exactly the 18 tools", async () => {
+  it("lists exactly the 19 tools", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
     const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -160,6 +160,7 @@ describe("createMcpSession — tools/list", () => {
         "pages_get",
         "stats",
         "leaderboard",
+        "referrals_top",
         "entries_list",
         "surveys_list",
         "templates_list",
@@ -343,6 +344,21 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     });
     const url = new URL(h.calls[0].url);
     expect(url.pathname).toBe("/api/v1/contests/c1/leaderboard");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("per_page")).toBe("50");
+  });
+
+  it("referrals_top passes page/per_page", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "referrals_top", arguments: { contest_id: "c1", page: 2, per_page: 50 } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1/referrals");
     expect(url.searchParams.get("page")).toBe("2");
     expect(url.searchParams.get("per_page")).toBe("50");
   });
@@ -743,7 +759,7 @@ describe("createMcpSession — tools/call errors", () => {
     });
     expect(initRes.result.protocolVersion).toBe("2025-06-18");
     const listRes = await rpc(session, { jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(listRes.result.tools.length).toBe(18);
+    expect(listRes.result.tools.length).toBe(19);
   });
 });
 

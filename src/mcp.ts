@@ -153,6 +153,23 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     def: {
+      name: "referrals_top",
+      title: "Get top referrers",
+      description:
+        "A page's top referrers, ranked by converted referrals, with each one's referral code, name, email and counts — plus totals for referral clicks and conversion rate. Only entrants who have referred at least one person are listed.",
+      inputSchema: {
+        type: "object",
+        properties: { contest_id: CONTEST_ID, ...PAGINATION },
+        required: ["contest_id"],
+      },
+      annotations: { readOnlyHint: true },
+    },
+    pathParam: "contest_id",
+    buildPath: (id) => `/contests/${enc(id!)}/referrals`,
+    queryParams: ["page", "per_page"],
+  },
+  {
+    def: {
       name: "entries_list",
       title: "List entries",
       description:

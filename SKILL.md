@@ -1,6 +1,6 @@
 ---
 name: tokei-agent
-description: Tokei (tokei.io) is a pre-launch, waitlist and giveaway platform — launch pages, competition giveaways, sweepstakes, referral and viral-loop campaigns, Product Hunt launch drives, Gleam-style and KickoffLabs-style entry pages. This CLI controls them from the command line — list, clone, update, publish and unpublish pages, upload images and video, set prizes, reward tiers and deadlines, restyle pages, and read stats, leaderboards, signups and survey responses, plus webhooks — all via the Tokei v1 REST API.
+description: Tokei (tokei.io) is a pre-launch, waitlist and giveaway platform — launch pages, competition giveaways, sweepstakes, referral and viral-loop campaigns, Product Hunt launch drives, Gleam-style and KickoffLabs-style entry pages. This CLI controls them from the command line — list, clone, update, publish and unpublish pages, upload images and video, set prizes, reward tiers and deadlines, restyle pages, and read stats, leaderboards, top referrers, signups and survey responses, plus webhooks — all via the Tokei v1 REST API.
 homepage: https://tokei.io/agent
 metadata: {"openclaw":{"emoji":"⏱️","requires":{"bins":[],"env":["TOKEI_API_KEY"]}}}
 ---
@@ -72,7 +72,7 @@ The fundamental pattern, end to end:
 4. **Prepare** — upload media and get back allowlisted URLs (Rule 2)
 5. **Shape** — PATCH copy, dates, prizes, appearance and media onto the page
 6. **Publish** — flip the draft live (needs a future `end_date`)
-7. **Monitor** — stats, leaderboard, signups
+7. **Monitor** — stats, leaderboard, top referrers, signups
 8. **Automate** — subscribe a webhook instead of polling
 
 ```sh
@@ -102,6 +102,7 @@ tokei-agent pages:publish "$PAGE" --data '{"end_date":"2026-09-01T00:00:00Z"}'
 # 7. Monitor
 tokei-agent stats "$PAGE"
 tokei-agent leaderboard "$PAGE" --per-page 10
+tokei-agent referrals:top "$PAGE" --per-page 10
 tokei-agent entries:list "$PAGE"
 
 # 8. Automate
@@ -114,7 +115,7 @@ Confirm every write by reading it back with `pages:get "$PAGE"` — everything w
 ## Output envelope, exit codes
 
 - stdout: the API's JSON body, augmented with a top-level `"rate_limit"` object: `{"limit": n, "remaining": n, "reset": <unix epoch seconds>}`, or `null` when the headers were absent (e.g. network failure).
-- **Agents always get this JSON.** From 0.3.2 the CLI renders a human banner and summary *only* when stdout is an interactive terminal. A subprocess, pipe, redirect, CI environment or the `mcp` transport has no TTY, so the JSON envelope below is what you will receive, byte for byte. If you ever need to force it explicitly, set `TOKEI_OUTPUT=json`.
+- **Agents always get this JSON.** From 0.3.1 the CLI renders a human banner and summary *only* when stdout is an interactive terminal. A subprocess, pipe, redirect, CI environment or the `mcp` transport has no TTY, so the JSON envelope below is what you will receive, byte for byte. If you ever need to force it explicitly, set `TOKEI_OUTPUT=json`.
 - Exit code `0` — success (HTTP 2xx).
 - Exit code `1` — API or network error. The API's JSON error body (same envelope, with `rate_limit`) is still printed on stdout; pure network failures print `{"ok": false, "error": {"type": "network_error", "message": ...}}`.
 - Exit code `2` — usage error (bad flags, missing arguments, missing `TOKEI_API_KEY`). Printed as JSON on **stderr**: `{"ok": false, "error": {"type": "usage_error", "message": ...}}`. Nothing was sent to the API.
@@ -125,8 +126,9 @@ Confirm every write by reading it back with `pages:get "$PAGE"` — everything w
 // single-object reads (pages:get, me, media:upload, pages:clone, …)
 { "success": true, "data": { … }, "rate_limit": { … } }
 
-// list reads (pages:list, leaderboard, entries:list, surveys:list,
-//             templates:list, webhooks:list)
+// list reads (pages:list, leaderboard, referrals:top, entries:list,
+//             surveys:list, templates:list, webhooks:list)
+// referrals:top adds a sibling "totals" object next to data + pagination
 { "success": true, "data": [ … ],
   "pagination": { "page": 1, "per_page": 20, "total_pages": 3, "total_count": 47 },
   "rate_limit": { … } }
@@ -151,7 +153,7 @@ tokei-agent pages:update "$PAGE" --title x | jq -r '.error.details[]?.field'
 
 `templates:list` and `me` are unpaginated — they return `data` with no `pagination` key.
 
-> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. Note that the published 0.3.0 package misreports `--version` as `0.2.2` (a labelling slip — the code is the fixed build): trust `npm view tokei-agent version`, not `--version`, when checking.
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. (Historical labelling slip: the 0.3.0 tarball misreported `--version` as `0.2.2`; 0.3.1+ reports correctly.)
 
 ## Commands (read — any key)
 
@@ -203,6 +205,20 @@ tokei-agent stats 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90
 
 ```sh
 tokei-agent leaderboard 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --per-page 10
+```
+
+**`referrals:top <contestId>`** — the page's top referrers, ranked by converted referrals then total referrals. Flags: `--page`, `--per-page <1-100>`.
+
+Each row carries `referrer_id`, `referral_code`, `full_name`, `email`, `total_referrals`, `converted_referrals` and `bonus_points_earned`. Alongside `data` and `pagination` the response adds a `totals` object: `total_referrers`, `total_referrals`, `total_clicks`, `converted_clicks`, `click_conversion_rate` (a percentage, one decimal place).
+
+Three things to know before you report these numbers:
+
+- Only entrants who have actually referred someone appear. Every participant is issued a referral code, so an unfiltered list would be almost entirely zero rows.
+- `converted_referrals` counts referred people who went on to complete at least one entry action *other than* sharing — it is the ranking key, and it is the number worth reporting as "referrals that worked".
+- `bonus_points_earned` is a **count of bonus entries, not a points total**, despite the name. The name matches the underlying data and the dashboard, so it is kept for consistency; do not present it as points.
+
+```sh
+tokei-agent referrals:top 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --per-page 10
 ```
 
 **`entries:list <contestId>`** — signups for a page. Flags: `--page`, `--per-page <1-100>`, `--email <addr>` (exact-match filter).
@@ -488,6 +504,7 @@ tokei-agent pages:list --status active --per-page 20
 tokei-agent pages:get <contestId>
 tokei-agent stats <contestId>
 tokei-agent leaderboard <contestId> --per-page 10
+tokei-agent referrals:top <contestId> --per-page 10
 tokei-agent entries:list <contestId> --email fan@example.com
 tokei-agent surveys:list <contestId> --page 2
 tokei-agent webhooks:list
@@ -519,7 +536,7 @@ tokei-agent webhooks:create --url https://you.com/hook --events entry.created  #
 tokei-agent webhooks:delete <webhookId>
 
 # Other
-tokei-agent mcp                       # MCP stdio server (all 18 commands as tools)
+tokei-agent mcp                       # MCP stdio server (all 19 commands as tools)
 tokei-agent --help                    # full flag reference
 tokei-agent --version
 ```

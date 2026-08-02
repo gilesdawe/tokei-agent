@@ -10,7 +10,7 @@ import { createTerm, failureMessage, formatCount } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.1";
+export const VERSION = "0.3.2";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -119,6 +119,11 @@ const COMMANDS: Record<string, CommandSpec> = {
   leaderboard: {
     positional: "contestId",
     buildPath: (id) => `/contests/${enc(id!)}/leaderboard`,
+    flags: [PAGE, PER_PAGE],
+  },
+  "referrals:top": {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/referrals`,
     flags: [PAGE, PER_PAGE],
   },
   "entries:list": {
@@ -299,6 +304,10 @@ const COPY: Record<string, CommandCopy> = {
   "actions:catalog": { pending: "Fetching action catalog", done: "Catalog loaded" },
   stats: { pending: "Gathering analytics", done: "Analytics ready" },
   leaderboard: { pending: "Ranking entrants", done: "Leaderboard ready" },
+  "referrals:top": {
+    pending: "Ranking referrers",
+    done: counted("referrer", "Top referrers loaded"),
+  },
   "entries:list": { pending: "Fetching entries", done: counted("entry", "Entries loaded") },
   "entries:create": { pending: "Recording entry", done: "Entry recorded" },
   "surveys:list": {
@@ -503,6 +512,10 @@ Commands (read):
   pages:get <contestId>       Get a single promotion
   stats <contestId>           Analytics for a promotion
   leaderboard <contestId>     Leaderboard   --page <n>  --per-page <1-100>
+  referrals:top <contestId>   Top referrers, ranked by conversions, plus
+                              click/conversion totals. Only entrants who have
+                              actually referred someone are listed.
+                                --page <n>  --per-page <1-100>
   entries:list <contestId>    List entries  --page <n>  --per-page <1-100>  --email <addr>
   surveys:list <contestId>    Survey responses  --page <n>  --per-page <1-100>
   webhooks:list               List webhook subscriptions  --page <n>  --per-page <1-100>

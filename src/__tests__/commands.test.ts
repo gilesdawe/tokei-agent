@@ -162,6 +162,13 @@ describe("main — command routing", () => {
     expect(lastUrl(h).searchParams.get("page")).toBe("3");
   });
 
+  it("referrals:top <id> -> GET /contests/:id/referrals with paging", async () => {
+    const h = harness();
+    await main(["referrals:top", "c-1", "--per-page", "10"], h.io);
+    expect(lastUrl(h).pathname).toBe("/api/v1/contests/c-1/referrals");
+    expect(lastUrl(h).searchParams.get("per_page")).toBe("10");
+  });
+
   it("entries:list <id> -> GET /contests/:id/entries with --email", async () => {
     const h = harness();
     await main(["entries:list", "c-1", "--email", "a@b.com"], h.io);

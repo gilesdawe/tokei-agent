@@ -40,9 +40,9 @@ tokei-agent stats <contestId>        # analytics for one page
 
 Every command prints JSON to stdout with a top-level `rate_limit` object. Exit codes: `0` success, `1` API/network error, `2` usage error (JSON on stderr).
 
-> **Interactive output (0.3.2+).** When stdout is an interactive terminal, the CLI renders a banner and a human-readable summary instead of raw JSON. When stdout is a pipe, a redirect, CI, or the `mcp` transport, it prints exactly the JSON it always has — so agents, scripts and MCP clients are unaffected. Set `TOKEI_OUTPUT=json` to force JSON at a terminal too; `NO_COLOR` disables colour and animation, and `TOKEI_NO_ANIM=1` keeps the colour but stops the movement.
+> **Interactive output (0.3.1+).** When stdout is an interactive terminal, the CLI renders a banner and a human-readable summary instead of raw JSON. When stdout is a pipe, a redirect, CI, or the `mcp` transport, it prints exactly the JSON it always has — so agents, scripts and MCP clients are unaffected. Set `TOKEI_OUTPUT=json` to force JSON at a terminal too; `NO_COLOR` disables colour and animation, and `TOKEI_NO_ANIM=1` keeps the colour but stops the movement.
 
-> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. Note that the published 0.3.0 package misreports `--version` as `0.2.2` (a labelling slip, not the old code): if `npm view tokei-agent version` says 0.3.0, you have the fix.
+> **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. (Historical labelling slip: the 0.3.0 tarball misreported `--version` as `0.2.2`; 0.3.1+ reports correctly.)
 
 ## Commands
 
@@ -55,6 +55,7 @@ Read (any key):
 | `pages:get <contestId>`    | One page in full (prizes, reward tiers, public URL)         |
 | `stats <contestId>`        | Aggregated analytics                                        |
 | `leaderboard <contestId>`  | Participants ranked by points                               |
+| `referrals:top <contestId>`| Top referrers ranked by conversions, plus referral totals   |
 | `entries:list <contestId>` | Signups — filter with `--email`                             |
 | `surveys:list <contestId>` | Survey responses                                            |
 | `webhooks:list`            | List webhook subscriptions                                  |
