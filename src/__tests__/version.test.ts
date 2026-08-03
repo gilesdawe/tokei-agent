@@ -21,4 +21,21 @@ describe("version guard", () => {
     expect(server.version).toBe(VERSION);
     expect(server.packages.map((p) => p.version)).toEqual([VERSION]);
   });
+
+  // The Claude Code plugin channel. plugin.json wins at install time, but the
+  // marketplace validator and `claude plugin tag` both cross-check the entry
+  // against it — and a stale plugin version is invisible in a listing, so it
+  // has to be a test rather than an eyeball. Postiz's has already drifted.
+  it("VERSION matches both versions in cli/.claude-plugin/", () => {
+    const plugin = JSON.parse(readFileSync(join(CLI_DIR, ".claude-plugin", "plugin.json"), "utf8")) as {
+      name: string;
+      version: string;
+    };
+    const marketplace = JSON.parse(readFileSync(join(CLI_DIR, ".claude-plugin", "marketplace.json"), "utf8")) as {
+      plugins: { name: string; version: string }[];
+    };
+    expect(plugin.version).toBe(VERSION);
+    expect(marketplace.plugins.map((p) => p.version)).toEqual([VERSION]);
+    expect(marketplace.plugins.map((p) => p.name)).toEqual([plugin.name]);
+  });
 });

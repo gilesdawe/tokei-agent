@@ -195,6 +195,45 @@ export function renderLogoRow(row: number, phase: number, mode: ColorMode): stri
   return out;
 }
 
+/**
+ * A STATIC wordmark block for `--help`, returned as a string instead of being
+ * written by a Term.
+ *
+ * `--help` and `--version` return from main() before the Term is ever created
+ * (there is no in-flight request to animate), so the interactive UI could not
+ * reach them — yet `--help` is the first command most humans run. This renders
+ * the same art, settled at the deterministic end-of-cycle phase the animation
+ * eases to, with no cursor control and no timers.
+ *
+ * Gates are deliberately identical to createTerm(): undefined for pipes,
+ * redirects, CI, `TERM=dumb`, `TOKEI_OUTPUT=json`, narrow terminals and
+ * corrupted art. So `tokei-agent --help | ...` stays byte-identical for agents
+ * and scripts that parse it.
+ */
+export function renderBanner(host: TermHost | undefined): string | undefined {
+  if (!host || !host.isTTY) return undefined;
+  const env = host.env;
+  if ((env.TOKEI_OUTPUT ?? "").toLowerCase() === "json") return undefined;
+  if (env.CI !== undefined && env.CI !== "") return undefined;
+  if (env.TERM === "dumb") return undefined;
+  if (effectiveColumns(host) < 60) return undefined;
+  if (!logoIsIntact()) return undefined;
+
+  const mode = detectColorMode(env);
+  if (isLegacyWindowsConsole(env, host.platform)) {
+    return `\n${INDENT}T O K E I   A G E N T\n\n`;
+  }
+  // Phase 1 == the whole-cycle value settle() eases to, so the static banner is
+  // the same frame a finished `me` run leaves on screen.
+  const lines: string[] = [""];
+  for (let r = 0; r < LOGO_HEIGHT; r++) lines.push(renderLogoRow(r, 1, mode));
+  lines.push("");
+  const sub = `${INDENT}      T O K E I   A G E N T`;
+  lines.push(mode === "none" ? sub : `${DIM}${sub}${RESET}`);
+  lines.push("");
+  return lines.join("\n") + "\n";
+}
+
 export interface SummaryRow {
   label: string;
   value: string;

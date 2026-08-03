@@ -6,11 +6,11 @@ import { request } from "./http.js";
 import type { BinaryFetchLike, FetchLike, HttpMethod } from "./http.js";
 import { createMcpSession } from "./mcp.js";
 import { uploadMedia } from "./media.js";
-import { createTerm, failureMessage, formatCount } from "./ui.js";
+import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.2";
+export const VERSION = "0.3.3";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -126,6 +126,11 @@ const COMMANDS: Record<string, CommandSpec> = {
     buildPath: (id) => `/contests/${enc(id!)}/referrals`,
     flags: [PAGE, PER_PAGE],
   },
+  "winners:list": {
+    positional: "contestId",
+    buildPath: (id) => `/contests/${enc(id!)}/winners`,
+    flags: [],
+  },
   "entries:list": {
     positional: "contestId",
     buildPath: (id) => `/contests/${enc(id!)}/entries`,
@@ -142,6 +147,10 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   "actions:catalog": {
     buildPath: () => "/actions/catalog",
+    flags: [{ name: "type", param: "type", kind: "string" }],
+  },
+  "events:catalog": {
+    buildPath: () => "/events/catalog",
     flags: [{ name: "type", param: "type", kind: "string" }],
   },
   "pages:clone": {
@@ -302,11 +311,16 @@ const COPY: Record<string, CommandCopy> = {
     done: counted("template", "Templates loaded"),
   },
   "actions:catalog": { pending: "Fetching action catalog", done: "Catalog loaded" },
+  "events:catalog": { pending: "Fetching event catalog", done: "Catalog loaded" },
   stats: { pending: "Gathering analytics", done: "Analytics ready" },
   leaderboard: { pending: "Ranking entrants", done: "Leaderboard ready" },
   "referrals:top": {
     pending: "Ranking referrers",
     done: counted("referrer", "Top referrers loaded"),
+  },
+  "winners:list": {
+    pending: "Fetching winners",
+    done: counted("selection run", "Winners loaded"),
   },
   "entries:list": { pending: "Fetching entries", done: counted("entry", "Entries loaded") },
   "entries:create": { pending: "Recording entry", done: "Entry recorded" },
@@ -516,6 +530,10 @@ Commands (read):
                               click/conversion totals. Only entrants who have
                               actually referred someone are listed.
                                 --page <n>  --per-page <1-100>
+  winners:list <contestId>    Selection-run history for a page (newest first):
+                              each run's seed, algorithm version, status, and
+                              its persisted winners with entrant identity and
+                              prize details. No pagination on this endpoint.
   entries:list <contestId>    List entries  --page <n>  --per-page <1-100>  --email <addr>
   surveys:list <contestId>    Survey responses  --page <n>  --per-page <1-100>
   webhooks:list               List webhook subscriptions  --page <n>  --per-page <1-100>
@@ -527,6 +545,10 @@ Commands (read):
                               it's trust-based/verifiable) — same list for
                               every key.
                                 --type <actionType>  (unknown type is a 400)
+  events:catalog              List every webhook event type Tokei's delivery
+                              engine understands (description, payload schema,
+                              subscribable) — same list for every key.
+                                --type <eventType>  (unknown type is a 400)
 
 Commands (write — need a read+write API key):
   pages:clone                 Create a promotion by cloning one you own; omit
@@ -606,6 +628,12 @@ export async function main(argv: string[], io: Io): Promise<number> {
   const { command, positionals, flags } = parseArgs(argv);
 
   if ("help" in flags || command === "help") {
+    // The wordmark above the help text is the first thing a human sees —
+    // `npx tokei-agent --help` is line 1 of the README quickstart. renderBanner
+    // returns undefined for pipes, redirects, CI and TOKEI_OUTPUT=json, so the
+    // parsed form of this output is unchanged.
+    const banner = renderBanner(io.term);
+    if (banner !== undefined) io.term!.write(banner);
     io.stdout(HELP);
     return 0;
   }

@@ -148,7 +148,7 @@ describe("createMcpSession — lifecycle / protocol", () => {
 });
 
 describe("createMcpSession — tools/list", () => {
-  it("lists exactly the 19 tools", async () => {
+  it("lists exactly the 21 tools", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
     const res = await rpc(session, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -161,10 +161,12 @@ describe("createMcpSession — tools/list", () => {
         "stats",
         "leaderboard",
         "referrals_top",
+        "winners_list",
         "entries_list",
         "surveys_list",
         "templates_list",
         "actions_catalog",
+        "events_catalog",
         "pages_clone",
         "pages_update",
         "pages_publish",
@@ -212,6 +214,9 @@ describe("createMcpSession — tools/list", () => {
     expect(templatesListRequired === undefined || templatesListRequired.length === 0).toBe(true);
     const actionsCatalogRequired = byName("actions_catalog").inputSchema.required;
     expect(actionsCatalogRequired === undefined || actionsCatalogRequired.length === 0).toBe(true);
+    const eventsCatalogRequired = byName("events_catalog").inputSchema.required;
+    expect(eventsCatalogRequired === undefined || eventsCatalogRequired.length === 0).toBe(true);
+    expect(byName("winners_list").inputSchema.required).toEqual(["contest_id"]);
   });
 
   it("pages_clone advertises a template input (alternative to source_promotion_id)", () => {
@@ -363,6 +368,36 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     expect(url.searchParams.get("per_page")).toBe("50");
   });
 
+  it("winners_list -> GET /contests/:id/winners, no query params, no body", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "winners_list", arguments: { contest_id: "c1" } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/contests/c1/winners");
+    expect(url.search).toBe("");
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(h.calls[0].init.body).toBeUndefined();
+  });
+
+  it("winners_list missing contest_id -> isError true, no fetch call", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "winners_list", arguments: {} },
+    });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("contest_id");
+    expect(h.calls).toEqual([]);
+  });
+
   it("templates_list -> GET /templates, no query, no body", async () => {
     const h = harness();
     const session = createMcpSession(h.io);
@@ -406,6 +441,36 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     const url = new URL(h.calls[0].url);
     expect(url.pathname).toBe("/api/v1/actions/catalog");
     expect(url.searchParams.get("type")).toBe("twitter_follow");
+  });
+
+  it("events_catalog -> GET /events/catalog, no query when type omitted, no body", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "events_catalog", arguments: {} },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/events/catalog");
+    expect(url.searchParams.get("type")).toBeNull();
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(h.calls[0].init.body).toBeUndefined();
+  });
+
+  it("events_catalog maps the optional type argument to ?type=", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "events_catalog", arguments: { type: "entry.created" } },
+    });
+    const url = new URL(h.calls[0].url);
+    expect(url.pathname).toBe("/api/v1/events/catalog");
+    expect(url.searchParams.get("type")).toBe("entry.created");
   });
 
   it("pages_clone with a template argument POSTs {title, template}", async () => {
@@ -759,7 +824,7 @@ describe("createMcpSession — tools/call errors", () => {
     });
     expect(initRes.result.protocolVersion).toBe("2025-06-18");
     const listRes = await rpc(session, { jsonrpc: "2.0", id: 2, method: "tools/list" });
-    expect(listRes.result.tools.length).toBe(19);
+    expect(listRes.result.tools.length).toBe(21);
   });
 });
 

@@ -1,6 +1,6 @@
 ---
 name: tokei-agent
-description: Tokei (tokei.io) is a pre-launch, waitlist and giveaway platform — launch pages, competition giveaways, sweepstakes, referral and viral-loop campaigns, Product Hunt launch drives, Gleam-style and KickoffLabs-style entry pages. This CLI controls them from the command line — list, clone, update, publish and unpublish pages, upload images and video, set prizes, reward tiers and deadlines, restyle pages, and read stats, leaderboards, top referrers, signups and survey responses, plus webhooks — all via the Tokei v1 REST API.
+description: Tokei (tokei.io) is a pre-launch, waitlist and giveaway platform — launch pages, competition giveaways, sweepstakes, referral and viral-loop campaigns, Product Hunt launch drives, Gleam-style and KickoffLabs-style entry pages. This CLI controls them from the command line — list, clone, update, publish and unpublish pages, upload images and video, set prizes, reward tiers and deadlines, restyle pages, and read stats, leaderboards, top referrers, signups, survey responses, winner selections and the webhook event catalog, plus manage webhooks (all 5 events) — all via the Tokei v1 REST API.
 homepage: https://tokei.io/agent
 metadata: {"openclaw":{"emoji":"⏱️","requires":{"bins":[],"env":["TOKEI_API_KEY"]}}}
 ---
@@ -21,7 +21,7 @@ Requires Node 22+. npm release: https://www.npmjs.com/package/tokei-agent — of
 
 ---
 
-## ⚠️ Three hard rules (read first)
+## ⚠️ Four hard rules (read first)
 
 **Rule 1 — Run `tokei-agent me` before anything else.** It proves the key is live and reports the account's **plan**. API access requires an active subscription or lifetime plan — **trial accounts get `403` on every command**, so a whole workflow can fail on its first call for a reason no other command explains.
 
@@ -37,6 +37,8 @@ tokei-agent pages:update "$PAGE_ID" --image-video "$HERO"
 Every `--image-video` / `--og-image` / `--background-image` example below assumes a `public_url` obtained this way — never a local file.
 
 **Rule 3 — List fields replace wholesale; always read before you write.** `prizes` (max 20) and `reward_thresholds` (max 50) are **not** merged — whatever array you send becomes the entire list, so sending one prize deletes the other nineteen. The pattern is always `pages:get` → modify the array → `pages:update` with the complete list.
+
+**Rule 4 — Get explicit human approval before any action that emails people or changes anything public.** Publishing a page, creating a webhook that fires on live events, sending entries/notifications, or anything else visible to entrants or third parties needs a human sign-off first — this CLI does not gate those calls for you, so you are the gate. Read-only commands (`me`, `pages:list`, `pages:get`, `stats`, `leaderboard`, `referrals:top`, `entries:list`, `surveys:list`, `winners:list`, `webhooks:list`, `templates:list`, `actions:catalog`, `events:catalog`) need no such approval.
 
 ---
 
@@ -105,9 +107,9 @@ tokei-agent leaderboard "$PAGE" --per-page 10
 tokei-agent referrals:top "$PAGE" --per-page 10
 tokei-agent entries:list "$PAGE"
 
-# 8. Automate
+# 8. Automate — events:catalog lists all 5 subscribable events and their payloads
 tokei-agent webhooks:create --url https://yourserver.com/webhooks/tokei \
-  --events entry.created
+  --events entry.created,winner.selected
 ```
 
 Confirm every write by reading it back with `pages:get "$PAGE"` — everything writable is also readable.
@@ -151,7 +153,7 @@ tokei-agent media:upload ./hero.png | jq -r '.data.public_url'
 tokei-agent pages:update "$PAGE" --title x | jq -r '.error.details[]?.field'
 ```
 
-`templates:list` and `me` are unpaginated — they return `data` with no `pagination` key.
+`templates:list`, `me` and `winners:list` are unpaginated — they return `data` with no `pagination` key (`winners:list`'s `data` is still an array, just capped rather than paged; see its entry below). `events:catalog` and `actions:catalog` return `data` as an object (or one entry, with `--type`), not an array at all.
 
 > **Known issue — exit codes on Node 24 / Windows (fixed in 0.3.0).** On 0.2.2 and earlier the CLI could print its correct JSON output and then abort during process exit, corrupting the exit code (`$LASTEXITCODE` read `-1073740791` / `0xC0000409` on success and failure alike). On an affected version, judge a run by the JSON on stdout, not by the exit status — or upgrade. (Historical labelling slip: the 0.3.0 tarball misreported `--version` as `0.2.2`; 0.3.1+ reports correctly.)
 
@@ -221,6 +223,12 @@ Three things to know before you report these numbers:
 tokei-agent referrals:top 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 --per-page 10
 ```
 
+**`winners:list <contestId>`** — selection-run history for a page, newest first, each run with its persisted winners nested. Read-only, no query params, no pagination (contest-scale run/winner counts, capped at 100 runs — headroom, not a pagination story). Finalize-via-API is deliberately out of scope (human-approval policy, Rule 4) — this is how an agent looks back at what a run actually selected, not how it draws one. Each run carries `id`, `created_at`, `seed`, `algorithm_version`, `status`, `requested_by_email`, `finalized_at`, `total_candidates`, `total_winners_selected`, `winners_count` and a `winners` array; each winner carries `id`, `contest_user_id`, `email`, `full_name`, `entry_points`, `created_at`, `country_name`, `city`, `prize_tier`, `prize_description`, `prize_value`, `selected_at`, `notified_at`, `notification_method`, `verified`, `claimed_at`.
+
+```sh
+tokei-agent winners:list 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90
+```
+
 **`entries:list <contestId>`** — signups for a page. Flags: `--page`, `--per-page <1-100>`, `--email <addr>` (exact-match filter).
 
 ```sh
@@ -245,7 +253,7 @@ tokei-agent webhooks:list
 tokei-agent templates:list
 ```
 
-Example response — the real menu at the time of writing. It grows as the platform publishes templates, so call `templates:list` and use the slugs it returns; never hardcode one.
+Example response — an **excerpt** of the real menu at the time of writing (14 templates live, 4 shown). It grows as the platform publishes templates, so call `templates:list` and use the slugs it returns; never hardcode one.
 
 ```json
 {
@@ -259,11 +267,11 @@ Example response — the real menu at the time of writing. It grows as the platf
       "entry_method_count": 6
     },
     {
-      "id": "5f988c4e-3faf-49f0-9ee4-438cb5efc491",
-      "slug": "product-hunt",
-      "name": "Product Hunt launch — upvote & share drive (Product Hunt, X, LinkedIn actions)",
-      "skin": "basic-new",
-      "entry_method_count": 5
+      "id": "c0cc71a0-1ff5-46ab-8a23-c801aec30337",
+      "slug": "instagram-engagement",
+      "name": "Instagram engagement — follow & share photo giveaway",
+      "skin": "showcase",
+      "entry_method_count": 3
     },
     {
       "id": "6ca0bdbc-23d8-4c79-a894-857eea485fbe",
@@ -278,20 +286,15 @@ Example response — the real menu at the time of writing. It grows as the platf
       "name": "A futuristic Steam template for Adding to Steam Wishlists and Playing Steam Games.",
       "skin": "future",
       "entry_method_count": 6
-    },
-    {
-      "id": "94d70a7a-296a-425a-ab50-e356b4cca68f",
-      "slug": "youtube-contest",
-      "name": "YouTube contest — video giveaway driving YouTube channel visits",
-      "skin": "future",
-      "entry_method_count": 1
     }
   ],
   "rate_limit": { "limit": 60, "remaining": 59, "reset": 1753000000 }
 }
 ```
 
-`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug. A `0` there is not always a stub: `secret-codes` has no social entry actions because its single action *is* the secret code, configured on the page rather than in `entry_methods`. Cloning it gives you the code input switched on but **no codes** — codes are stored per page and are never copied, so the owner adds their own in the dashboard.
+Rows come back sorted by `slug`, unpaginated. The other ten at the time of writing: `discord-community`, `facebook-promotion`, `family-friends`, `prelaunch-vips`, `product-hunt`, `survey-system`, `tiktok-growth`, `twitch-growth`, `x-followers`, `youtube-contest`.
+
+`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug. A `0` there is not always a stub — two templates legitimately report `0` because their action lives on the page rather than in `entry_methods`: `secret-codes` (the single action *is* the secret code) and `survey-system` (a mandatory survey plus a photo upload). Cloning `secret-codes` gives you the code input switched on but **no codes** — codes are stored per page and are never copied, so the owner adds their own in the dashboard.
 
 What the skins look like — use this to match the user's reference point:
 
@@ -324,6 +327,12 @@ tokei-agent actions:catalog --type twitter_follow
 ```
 
 A field's `group` marks alternatives — write the FIRST field of the group; the rest are claim-validator aliases that satisfy validation but render a dead button on their own (each carries a `note` saying so). `isEntryMethodRow: false` means the type is not writable as an `entry_methods` row at all (it's enabled via a contest setting or a dedicated route instead) — `needs` says which.
+
+**`events:catalog`** — every webhook event Tokei's delivery engine understands: description, `payloadSchema` (the exact shape of the `data` field a subscriber receives), `emitSites` and whether it's `subscribable`. This is the **authoritative** payload reference for `webhooks:create` — read it before assuming a field exists in a delivery. Same list for every key (not scoped to your account, no pagination). Flags: `--type <eventName>` (a value matching no event type is `400`). All 5 events are `subscribable: true` this stage — every one has a real emit site (see Webhooks below).
+
+```sh
+tokei-agent events:catalog --type winner.selected
+```
 
 ## Commands (write — need a read+write key)
 
@@ -426,13 +435,15 @@ tokei-agent entries:create 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
 
 A duplicate email for the same page returns `409` — the person is already signed up; usually safe to treat as success.
 
-**`webhooks:create`** — subscribe an HTTPS endpoint. Flags: `--url` (required), `--events <e1,e2>` (required; currently only `entry.created` exists), `--data`. Capped at **10 active subscriptions per account** — the eleventh returns `400 BAD_REQUEST` telling you to delete one first.
+**`webhooks:create`** — subscribe an HTTPS endpoint. Flags: `--url` (required), `--events <e1,e2>` (required — one or more of the 5 subscribable events: `entry.created`, `contest.ended`, `winner.selected`, `daily_bonus.claimed`, `referral.converted`; run `events:catalog` for what each payload contains and where it fires from), `--data`. Capped at **10 active subscriptions per account** — the eleventh returns `400 BAD_REQUEST` telling you to delete one first. Get explicit human approval before creating a live webhook (Rule 4) — it starts firing on real events immediately.
 
 ```sh
-tokei-agent webhooks:create --url https://yourserver.com/webhooks/tokei --events entry.created
+tokei-agent webhooks:create --url https://yourserver.com/webhooks/tokei --events entry.created,winner.selected
 ```
 
 The response contains the `whsec_` signing secret **exactly once** — it cannot be retrieved again (the CLI also prints a stderr warning). Store it immediately; deliveries are HMAC-SHA256 signed in the `X-TOKEI-Signature` header, expect a 2xx within 10s, and retry with backoff (5s, 30s, 5min).
+
+> **Creator (per-contest) webhooks are separate from this API.** A page owner can also subscribe a webhook from the Tokei dashboard, per contest — those are created via a session-auth route (`src/app/api/promotion/[contestId]/webhooks/route.ts`), not this CLI/API, and are curated to a fixed trio (`entry.created`, `winner.selected`, `contest.ended`) with no event-picker UI. `daily_bonus.claimed` and `referral.converted` stay developer-API-only, reachable only via `webhooks:create` above.
 
 **`webhooks:delete <webhookId>`** — remove a subscription.
 
@@ -507,9 +518,11 @@ tokei-agent leaderboard <contestId> --per-page 10
 tokei-agent referrals:top <contestId> --per-page 10
 tokei-agent entries:list <contestId> --email fan@example.com
 tokei-agent surveys:list <contestId> --page 2
+tokei-agent winners:list <contestId>
 tokei-agent webhooks:list
 tokei-agent templates:list
 tokei-agent actions:catalog
+tokei-agent events:catalog
 
 # Create (write key)
 tokei-agent pages:clone --title "T" --template <slug>          # 20/day cap
@@ -536,7 +549,7 @@ tokei-agent webhooks:create --url https://you.com/hook --events entry.created  #
 tokei-agent webhooks:delete <webhookId>
 
 # Other
-tokei-agent mcp                       # MCP stdio server (all 19 commands as tools)
+tokei-agent mcp                       # MCP stdio server (all 21 commands as tools)
 tokei-agent --help                    # full flag reference
 tokei-agent --version
 ```

@@ -10,6 +10,7 @@ import {
   formatCount,
   isLegacyWindowsConsole,
   logoIsIntact,
+  renderBanner,
   renderLogoRow,
   sampleStops,
   SPINNER,
@@ -200,6 +201,52 @@ describe("createTerm gating", () => {
 
   it("returns a Term for a normal interactive terminal", () => {
     expect(createTerm(host())).toBeDefined();
+  });
+});
+
+describe("renderBanner (the --help wordmark)", () => {
+  // --help returns from main() before any Term exists, so this is the only
+  // path that can decorate it. The gates must match createTerm exactly,
+  // because `tokei-agent --help | grep ...` is a documented agent workflow.
+  it("is suppressed everywhere createTerm is suppressed", () => {
+    expect(renderBanner(undefined)).toBeUndefined();
+    expect(renderBanner(host({ isTTY: false }))).toBeUndefined();
+    expect(renderBanner(host({ env: { TOKEI_OUTPUT: "json" } }))).toBeUndefined();
+    expect(renderBanner(host({ env: { TOKEI_OUTPUT: "JSON" } }))).toBeUndefined();
+    expect(renderBanner(host({ env: { CI: "1" } }))).toBeUndefined();
+    expect(renderBanner(host({ env: { TERM: "dumb" } }))).toBeUndefined();
+    expect(renderBanner(host({ columns: 40 }))).toBeUndefined();
+  });
+
+  it("renders all six wordmark rows plus the subtitle at a real terminal", () => {
+    const out = renderBanner(host());
+    expect(out).toBeDefined();
+    // eslint-disable-next-line no-control-regex -- matching escape sequences is the point
+    const plain = out!.replace(/\x1b\[[\d;]*m/g, "");
+    for (const row of LOGO) expect(plain).toContain(row);
+    expect(plain).toContain("T O K E I   A G E N T");
+  });
+
+  it("emits no cursor control — it is static, unlike the animated Term", () => {
+    const out = renderBanner(host())!;
+    expect(out).not.toContain("\x1b[?25l");
+    expect(out).not.toContain("\x1b[?25h");
+    expect(out).not.toContain("\x1b[K");
+  });
+
+  it("is deterministic — the same frame on every run", () => {
+    expect(renderBanner(host())).toBe(renderBanner(host()));
+  });
+
+  it("falls back to plain text on a legacy Windows console", () => {
+    const out = renderBanner(host({ platform: "win32", env: { COLORTERM: "truecolor" } }));
+    expect(out).toBe("\n              T O K E I   A G E N T\n\n");
+  });
+
+  it("drops colour under NO_COLOR but keeps the art", () => {
+    const out = renderBanner(host({ env: { NO_COLOR: "1" } }))!;
+    expect(out).not.toContain("\x1b[38;2;");
+    expect(out).toContain(LOGO[0]!);
   });
 });
 

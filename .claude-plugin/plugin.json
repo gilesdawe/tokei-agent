@@ -1,0 +1,28 @@
+{
+  "name": "tokei-agent",
+  "version": "0.3.3",
+  "description": "Control Tokei (tokei.io) waitlist, pre-launch and giveaway campaigns from Claude Code: clone and publish launch pages, set prizes and reward tiers, upload media, and read stats and leaderboards.",
+  "author": {
+    "name": "Giles Dawe",
+    "url": "https://tokei.io"
+  },
+  "homepage": "https://tokei.io/agent",
+  "repository": "https://github.com/gilesdawe/tokei-agent",
+  "license": "MIT",
+  "keywords": [
+    "tokei",
+    "waitlist",
+    "prelaunch",
+    "giveaway",
+    "competition",
+    "sweepstakes",
+    "referral",
+    "leaderboard",
+    "marketing",
+    "cli",
+    "mcp"
+  ],
+  "skills": [
+    "./"
+  ]
+}

@@ -169,6 +169,24 @@ describe("main — command routing", () => {
     expect(lastUrl(h).searchParams.get("per_page")).toBe("10");
   });
 
+  it("winners:list <id> -> GET /contests/:id/winners, no pagination flags", async () => {
+    const h = harness();
+    const code = await main(["winners:list", "c-1"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/contests/c-1/winners");
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(url.search).toBe("");
+  });
+
+  it("winners:list rejects an unknown flag (no pagination support on this endpoint)", async () => {
+    const h = harness();
+    const code = await main(["winners:list", "c-1", "--page", "2"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
   it("entries:list <id> -> GET /contests/:id/entries with --email", async () => {
     const h = harness();
     await main(["entries:list", "c-1", "--email", "a@b.com"], h.io);
@@ -207,6 +225,24 @@ describe("main — command routing", () => {
     expect(code).toBe(0);
     const url = lastUrl(h);
     expect(url.searchParams.get("type")).toBe("twitter_follow");
+  });
+
+  it("events:catalog -> GET /events/catalog, no --type -> no query param", async () => {
+    const h = harness();
+    const code = await main(["events:catalog"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/events/catalog");
+    expect(h.calls[0].init.method).toBe("GET");
+    expect(url.searchParams.get("type")).toBeNull();
+  });
+
+  it("events:catalog --type maps to the ?type= query param", async () => {
+    const h = harness();
+    const code = await main(["events:catalog", "--type", "entry.created"], h.io);
+    expect(code).toBe(0);
+    const url = lastUrl(h);
+    expect(url.searchParams.get("type")).toBe("entry.created");
   });
 
   it("honours the TOKEI_API_URL override", async () => {
@@ -271,6 +307,27 @@ describe("main — error and usage handling", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
     expect(h.calls).toEqual([]);
+  });
+
+  it("winners:list missing required contestId -> usage error, exit 2", async () => {
+    const h = harness();
+    const code = await main(["winners:list"], h.io);
+    expect(code).toBe(2);
+    expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
+    expect(h.calls).toEqual([]);
+  });
+
+  it("events:catalog unknown --type -> API 400 surfaced as exit 1 (validation is the API's, not the CLI's)", async () => {
+    const errRes: HttpResponse = {
+      status: 400,
+      headers: { get: () => null },
+      text: async () =>
+        JSON.stringify({ success: false, error: { code: "BAD_REQUEST", message: "Invalid type filter" } }),
+    };
+    const h = harness({ response: errRes });
+    const code = await main(["events:catalog", "--type", "bogus"], h.io);
+    expect(code).toBe(1);
+    expect(JSON.parse(h.out[0]).success).toBe(false);
   });
 
   it("invalid --per-page (out of range) -> usage error, exit 2", async () => {
@@ -771,6 +828,22 @@ describe("main — write commands", () => {
     const text = h.out.join("\n");
     expect(text).toContain("actions:catalog");
     expect(text).toContain("--type");
+  });
+
+  it("--help mentions events:catalog and its --type flag", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("events:catalog");
+  });
+
+  it("--help mentions winners:list", async () => {
+    const h = harness();
+    const code = await main(["--help"], h.io);
+    expect(code).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("winners:list");
   });
 
   it("--help mentions the pages:update appearance flags, including narrow|medium|wide for --card-width", async () => {

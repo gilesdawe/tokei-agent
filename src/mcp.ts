@@ -170,6 +170,22 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     def: {
+      name: "winners_list",
+      title: "Get selection-run winners",
+      description:
+        "Selection-run history for a page (newest first): each run's id, seed, algorithm version, status, requested_by_email, total_candidates/total_winners_selected, and its persisted winners — each with entrant identity (email, full_name, entry_points, created_at, country_name, city) and prize details (prize_tier, prize_description, prize_value, selected_at, notified_at, notification_method, verified, claimed_at). Read-only: finalizing a run is session-auth only, not available via this API.",
+      inputSchema: {
+        type: "object",
+        properties: { contest_id: CONTEST_ID },
+        required: ["contest_id"],
+      },
+      annotations: { readOnlyHint: true },
+    },
+    pathParam: "contest_id",
+    buildPath: (id) => `/contests/${enc(id!)}/winners`,
+  },
+  {
+    def: {
       name: "entries_list",
       title: "List entries",
       description:
@@ -234,6 +250,26 @@ const TOOL_SPECS: ToolSpec[] = [
       annotations: { readOnlyHint: true },
     },
     buildPath: () => "/actions/catalog",
+    queryParams: ["type"],
+  },
+  {
+    def: {
+      name: "events_catalog",
+      title: "List webhook event catalog",
+      description:
+        "List every webhook event type Tokei's delivery engine understands: description, payload schema, and whether it's currently subscribable. Same catalog for every key — not scoped to your account. Optional type argument returns just that one event type's entry; a value matching no known type is a 400.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            description: "Filter to one event type, e.g. entry.created. Unknown values return 400.",
+          },
+        },
+      },
+      annotations: { readOnlyHint: true },
+    },
+    buildPath: () => "/events/catalog",
     queryParams: ["type"],
   },
   {
@@ -510,9 +546,19 @@ const TOOL_SPECS: ToolSpec[] = [
           url: { type: "string", description: "HTTPS endpoint that receives event payloads." },
           events: {
             type: "array",
-            items: { type: "string", enum: ["entry.created"] },
+            items: {
+              type: "string",
+              enum: [
+                "entry.created",
+                "contest.ended",
+                "winner.selected",
+                "daily_bonus.claimed",
+                "referral.converted",
+              ],
+            },
             minItems: 1,
-            description: 'Events to subscribe to (currently only "entry.created").',
+            description:
+              "Events to subscribe to. All five are subscribable: entry.created, contest.ended, winner.selected, daily_bonus.claimed, referral.converted.",
           },
         },
         required: ["url", "events"],

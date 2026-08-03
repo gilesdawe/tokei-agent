@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "tokei",
+  "description": "Tokei's agent tooling for Claude Code — the tokei-agent skill for driving waitlist, pre-launch and giveaway campaigns on tokei.io.",
+  "owner": {
+    "name": "Giles Dawe",
+    "url": "https://tokei.io"
+  },
+  "plugins": [
+    {
+      "name": "tokei-agent",
+      "version": "0.3.3",
+      "description": "Control Tokei (tokei.io) waitlist, pre-launch and giveaway campaigns from Claude Code: clone and publish launch pages, set prizes and reward tiers, upload media, and read stats and leaderboards.",
+      "author": {
+        "name": "Giles Dawe",
+        "url": "https://tokei.io"
+      },
+      "category": "productivity",
+      "source": "./",
+      "homepage": "https://tokei.io/agent"
+    }
+  ]
+}

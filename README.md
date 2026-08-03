@@ -12,6 +12,19 @@ npx tokei-agent --help
 
 Requires Node 22+.
 
+### Claude Code
+
+Install it as a plugin and the `tokei-agent` skill comes with it — Claude then
+knows the whole command surface without being told:
+
+```
+/plugin marketplace add gilesdawe/tokei-agent
+/plugin install tokei-agent@tokei
+```
+
+Set `TOKEI_API_KEY` (see [Quick start](#quick-start)) and you're done. The CLI
+itself still runs via `npx`, so there is nothing else to install.
+
 ## Quick start
 
 1. Create an API key at [tokei.io](https://tokei.io) → Dashboard → Settings → API Keys. Pick **read-only** unless you need to change things; API access requires an active subscription or lifetime plan.
@@ -56,11 +69,13 @@ Read (any key):
 | `stats <contestId>`        | Aggregated analytics                                        |
 | `leaderboard <contestId>`  | Participants ranked by points                               |
 | `referrals:top <contestId>`| Top referrers ranked by conversions, plus referral totals   |
+| `winners:list <contestId>` | Selection-run history, newest first, with each run's winners nested |
 | `entries:list <contestId>` | Signups — filter with `--email`                             |
 | `surveys:list <contestId>` | Survey responses                                            |
 | `webhooks:list`            | List webhook subscriptions                                  |
 | `templates:list`           | The platform's named starting points, for `pages:clone --template` |
 | `actions:catalog`          | Every entry-action type Tokei supports — `--type <actionType>`     |
+| `events:catalog`           | Every webhook event Tokei's delivery engine understands — `--type <eventName>` |
 
 Write (needs a read+write key):
 
