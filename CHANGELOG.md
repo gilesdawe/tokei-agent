@@ -13,6 +13,26 @@ has so far.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-08-20
+
+### Added
+
+- `pages:update --template simple` — the Custom template: bare structural
+  markup the creator styles entirely via `--custom-css`, rather than a fixed
+  layout.
+- `pages:update --custom-css <css>` — creator CSS for the Custom template,
+  applied on both the hosted page and the widget embed via `--tokei-*` custom
+  properties and `.tokei-simple-*` class hooks. Max 20 KB; server-sanitised,
+  with unsafe constructs rejected by a 422 naming the reason.
+- `--card-width` gains `xl` and `max-w-7xl`, in both the CLI flag and the
+  `pages_update` MCP tool's schema.
+- `entry_methods` — the page's action buttons — is now settable through
+  `pages:update --data` and the `pages_update` MCP tool, alongside `prizes`
+  and `reward_thresholds`. Replaces the whole list wholesale: an action row
+  (`actionType`, `label`, `points?`, `config?`, `requireVerification?`) or a
+  custom-link row (`label`, `points?`, `link`, `actionsRequired?`) with no
+  `actionType`.
+
 ## [0.3.3] — 2026-08-03
 
 ### Added
@@ -158,7 +178,8 @@ has so far.
   auth, JSON-only stdout with a top-level `rate_limit` object, zero runtime
   dependencies.
 
-[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.3...HEAD
+[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.4...HEAD
+[0.3.4]: https://www.npmjs.com/package/tokei-agent/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/tokei-agent/v/0.3.3
 [0.3.2]: https://www.npmjs.com/package/tokei-agent/v/0.3.2
 [0.3.1]: https://www.npmjs.com/package/tokei-agent/v/0.3.1

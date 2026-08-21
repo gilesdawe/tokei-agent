@@ -335,7 +335,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "pages_update",
       title: "Update promotion page",
       description:
-        "Update a page: title, description, start/end dates, prizes, reward tiers, appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes and reward_thresholds each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
+        "Update a page: title, description, start/end dates, prizes, reward tiers, entry methods (the action buttons on the page), appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes, reward_thresholds and entry_methods each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -375,14 +375,27 @@ const TOOL_SPECS: ToolSpec[] = [
               "Replaces reward tiers wholesale. Items: {id, points, rewardType, rewardDescription, isEnabled, rewardDetails?}.",
             items: { type: "object" },
           },
+          entry_methods: {
+            type: "array",
+            maxItems: 30,
+            description:
+              "The page's entry actions. Replaces the list wholesale; [] clears every action. Two row shapes. ACTION ROW: {actionType, label, points?, config?, requireVerification?} — actionType must be one of the writable types from actions_catalog, and config's keys are that type's `fields`. CUSTOM LINK ROW: {label, points?, link, actionsRequired?} with NO actionType — a plain http(s) button to any URL, for anything the catalog has no action for; actionsRequired (0-20) hides it until the entrant has completed that many other actions. icon and config.type are server-derived and ignored if sent. label is 1-100 chars, points 0-100 (0 means 'use the action's default'). Labels starting with 'Visit Our ' are reserved for the page's own campaign-URL button — the dashboard rewrites those.",
+            items: { type: "object" },
+          },
           template: {
             type: "string",
-            enum: ["basic-new", "showcase", "future"],
-            description: "Page skin/layout template.",
+            enum: ["basic-new", "showcase", "future", "simple"],
+            description:
+              "Page skin/layout template. 'simple' is the Custom template — bare structural markup the creator styles via custom_css.",
           },
           dark_mode_enabled: {
             type: "boolean",
             description: "Enable dark mode on the public page.",
+          },
+          custom_css: {
+            type: ["string", "null"],
+            description:
+              "Creator CSS for the Custom ('simple') template — applied on the hosted page AND the widget embed, styling via --tokei-* custom properties and .tokei-simple-* class hooks. Max 20 KB; server-sanitised (unsafe constructs rejected with a 422 naming the reason). null clears it.",
           },
           primary_color: {
             type: ["string", "null"],
@@ -390,7 +403,16 @@ const TOOL_SPECS: ToolSpec[] = [
           },
           card_width: {
             type: "string",
-            enum: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
+            enum: [
+              "narrow",
+              "medium",
+              "wide",
+              "xl",
+              "max-w-2xl",
+              "max-w-3xl",
+              "max-w-4xl",
+              "max-w-7xl",
+            ],
             description:
               "Content column width. Friendly names map to Tailwind max-w classes server-side.",
           },

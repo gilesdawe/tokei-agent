@@ -83,7 +83,7 @@ Write (needs a read+write key):
 | ----------------------------- | ------------------------------------------------------------------------ |
 | `pages:clone`                 | Create a page by cloning one you own, a named template, or the starter. 20/day cap |
 | `media:upload <file>`         | Upload an image or video, get back a `public_url` for `pages:update`. ≤5MB per file (video too) |
-| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance, media, and entry actions (`entry_methods`) |
+| `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance (incl. the Custom template: `--template simple` / `--custom-css`), media, and entry actions (`entry_methods`, incl. custom-link rows) |
 | `pages:publish <contestId>`   | Take a page live (needs a future `end_date`)                             |
 | `pages:unpublish <contestId>` | Back to draft — blocks new signups, but the page still renders publicly  |
 | `entries:create <contestId>`  | Add a signup                                                             |

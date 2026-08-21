@@ -10,7 +10,7 @@ import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.3";
+export const VERSION = "0.3.4";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -181,14 +181,26 @@ const COMMANDS: Record<string, CommandSpec> = {
       { name: "description", field: "description", kind: "string" },
       { name: "start-date", field: "start_date", kind: "string" },
       { name: "end-date", field: "end_date", kind: "string" },
-      { name: "template", field: "template", kind: "enum", values: ["basic-new", "showcase", "future"] },
+      // "simple" is the Custom template (creator-styled via custom_css) — launched 2026-08-10.
+      { name: "template", field: "template", kind: "enum", values: ["basic-new", "showcase", "future", "simple"] },
+      // Creator CSS for the Custom template (hosted page + widget). Max 20 KB, server-sanitised.
+      { name: "custom-css", field: "custom_css", kind: "string" },
       { name: "dark-mode", field: "dark_mode_enabled", kind: "bool" },
       { name: "primary-color", field: "primary_color", kind: "string" },
       {
         name: "card-width",
         field: "card_width",
         kind: "enum",
-        values: ["narrow", "medium", "wide", "max-w-2xl", "max-w-3xl", "max-w-4xl"],
+        values: [
+          "narrow",
+          "medium",
+          "wide",
+          "xl",
+          "max-w-2xl",
+          "max-w-3xl",
+          "max-w-4xl",
+          "max-w-7xl",
+        ],
       },
       // Media (S2.5): public_url values from media:upload. See media:upload's
       // help entry for the two-step flow that produces them.
@@ -571,12 +583,25 @@ Commands (write — need a read+write API key):
                               (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov);
                               override with --content-type <type>.
   pages:update <contestId>    Update a promotion. Simple fields via flags; prizes,
-                              reward_thresholds (or a full body) via --data.
+                              reward_thresholds, entry_methods (or a full body)
+                              via --data. Each of those three REPLACES the whole
+                              list — read with pages:get first, modify, send back.
+                              An entry_methods row is either an action row
+                              {actionType,label,points?,config?,requireVerification?}
+                              (actionType from actions:catalog) or a custom link
+                              {label,points?,link,actionsRequired?} with no
+                              actionType, e.g.
+                                --data '{"entry_methods":[{"label":"Read the
+                                Newsletter","points":2,"link":"https://x.com/n"}]}'
                                 --title <t>  --description <d>
                                 --start-date <iso>  --end-date <iso>
-                                --template basic-new|showcase|future
+                                --template basic-new|showcase|future|simple
+                                ("simple" = the Custom template, bring-your-own-CSS)
+                                --custom-css <css> (Custom-template creator CSS,
+                                ≤20 KB, sanitised server-side)
                                 --dark-mode true|false  --primary-color <hex>
-                                --card-width narrow|medium|wide (or max-w-2xl|3xl|4xl)
+                                --card-width narrow|medium|wide|xl
+                                (or max-w-2xl|3xl|4xl|7xl)
                                 --image-video <url>  --secondary-image <url>
                                 --third-image <url>  --fourth-image <url>
                                 --fifth-image <url>  --background-image <url>

@@ -234,7 +234,7 @@ describe("createMcpSession — tools/list", () => {
     const props = tool.inputSchema.properties as Record<string, any>;
 
     expect(props.template).toBeDefined();
-    expect(props.template.enum).toEqual(["basic-new", "showcase", "future"]);
+    expect(props.template.enum).toEqual(["basic-new", "showcase", "future", "simple"]);
 
     expect(props.dark_mode_enabled).toBeDefined();
     expect(props.dark_mode_enabled.type).toBe("boolean");
@@ -247,13 +247,47 @@ describe("createMcpSession — tools/list", () => {
       "narrow",
       "medium",
       "wide",
+      "xl",
       "max-w-2xl",
       "max-w-3xl",
       "max-w-4xl",
+      "max-w-7xl",
     ]);
 
     // contest_id stays the only required field — the new fields are optional.
     expect(tool.inputSchema.required).toEqual(["contest_id"]);
+  });
+
+  it("pages_update advertises entry_methods, including the custom-link row shape", () => {
+    // callTool forwards args verbatim (no allowlist), so an undeclared field
+    // WOULD reach the API — but the advertised schema is the only place an
+    // agent can learn the shape, and without this property none realistically
+    // did. The custom-link row (no actionType) is the one shape actions_catalog
+    // cannot describe, so the description has to carry it.
+    const tool = TOOLS.find((t) => t.name === "pages_update")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    expect(props.entry_methods).toBeDefined();
+    expect(props.entry_methods.type).toBe("array");
+    expect(props.entry_methods.maxItems).toBe(30);
+    expect(props.entry_methods.description).toContain("actionType");
+    expect(props.entry_methods.description).toContain("link");
+    expect(props.entry_methods.description).toContain("actionsRequired");
+    expect(tool.description).toContain("entry_methods");
+  });
+
+  it("pages_update advertises custom_css and the simple template", () => {
+    const tool = TOOLS.find((t) => t.name === "pages_update")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    expect(props.custom_css).toBeDefined();
+    expect(props.custom_css.type).toEqual(["string", "null"]);
+    // Launched 2026-08-10 — the pre-launch gate wording must be GONE, or an
+    // agent will refuse to use a field that works.
+    expect(props.custom_css.description).not.toContain("re-launch");
+    expect(props.template.description).not.toContain("re-launch");
+    expect(props.template.enum).toContain("simple");
+    expect(props.custom_css.description).toContain("tokei-simple-");
   });
 
   it("pages_update advertises the seven media fields", () => {
