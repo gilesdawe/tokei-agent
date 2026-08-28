@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "tokei-agent",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "description": "Control Tokei (tokei.io) waitlist, pre-launch and giveaway campaigns from Claude Code: clone and publish launch pages, set prizes and reward tiers, upload media, and read stats and leaderboards.",
       "author": {
         "name": "Giles Dawe",

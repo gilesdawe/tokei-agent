@@ -13,7 +13,50 @@ has so far.
 
 ## [Unreleased]
 
-## [0.3.4] — 2026-08-20
+## [0.3.5] — 2026-08-28
+
+### Fixed
+
+- **MCP tool calls no longer forward undeclared arguments.** `callTool` built the
+  request body as `{ ...fixedBody, ...args }` and validated only that *required*
+  arguments were present, so any extra field a caller invented rode through to the
+  API. Because `PATCH /api/v1/contests/{id}` replaces `prizes` wholesale, a call of
+  `pages_publish { contest_id, prizes: [] }` **wiped the page's prize list** — under
+  a tool annotated `destructiveHint: false`. Arguments are now allowlisted against
+  the tool's own `inputSchema.properties` before the merge; undeclared fields are
+  dropped, and the tool result now names the ones it ignored rather than
+  discarding them in silence. Declared arguments still win over `fixedBody`.
+
+  One documented field was caught by this and is declared as part of the same
+  release: `entries_create` accepted `marketing_consent`
+  (`docs/using-custom-apis.md`) without advertising it, so the allowlist would
+  have dropped it. See Added below.
+- **`entries_create` was silently discarding `marketing_consent`.** The v1 route
+  accepts it and the field gates whether an entrant is ever synced to the
+  creator's connected email provider, so an import of consented entrants would
+  have returned 201 on every row and synced none of them.
+
+### Added
+
+- `entries_create` declares `marketing_consent`. Set it to `true` only when the
+  participant genuinely gave marketing consent elsewhere; it records the consent
+  and its timestamp, and is what enables the email-provider sync.
+
+### Changed
+
+- `pages_update`'s description now states that `status` is not settable there and
+  points at `pages_publish` / `pages_unpublish`. `status` stays undeclared on
+  purpose — `pages_publish` enforces a future-`end_date` check that a raw
+  `status: "active"` would bypass.
+- `webhooks_delete` now declares `idempotentHint: true`, and its description states
+  that the subscription's queued and historical `webhook_deliveries` rows are
+  deleted with it (`ON DELETE CASCADE`), so past delivery attempts are not
+  retrievable afterwards.
+- The MCP server instructions and the `pages_unpublish` description are reworded
+  from instructing the agent ("slow down", "Tell your user this…") to describing
+  what the API does. No behavioural change.
+
+## [0.3.4] — 2026-08-21
 
 ### Added
 
@@ -178,7 +221,8 @@ has so far.
   auth, JSON-only stdout with a top-level `rate_limit` object, zero runtime
   dependencies.
 
-[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.4...HEAD
+[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.5...HEAD
+[0.3.5]: https://www.npmjs.com/package/tokei-agent/v/0.3.5
 [0.3.4]: https://www.npmjs.com/package/tokei-agent/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/tokei-agent/v/0.3.3
 [0.3.2]: https://www.npmjs.com/package/tokei-agent/v/0.3.2

@@ -199,6 +199,29 @@ describe("createMcpSession — tools/list", () => {
     }
   });
 
+  // T3b (0.3.5). Deleting a subscription CASCADEs its webhook_deliveries rows
+  // (20260611_webhook_delivery_queue.sql:20), and repeating the delete is a
+  // harmless 404 — both facts belong in the annotation surface.
+  it("webhooks_delete declares idempotentHint and names the delivery cascade", () => {
+    const tool = TOOLS.find((t) => t.name === "webhooks_delete")!;
+    expect(tool.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    });
+    expect(tool.description).toContain("webhook_deliveries");
+  });
+
+  // T3c (0.3.5). Tool text describes what the API does; it does not instruct the
+  // agent how to behave (Connectors Directory review point).
+  it("tool text stays declarative rather than instructing the agent", () => {
+    const unpublish = TOOLS.find((t) => t.name === "pages_unpublish")!;
+    expect(unpublish.description).not.toContain("Tell your user");
+    for (const tool of TOOLS) {
+      expect(tool.description).not.toMatch(/slow down/i);
+    }
+  });
+
   it("required fields are declared on the relevant tools", () => {
     const byName = (name: string) => TOOLS.find((t) => t.name === name)!;
     expect(byName("pages_get").inputSchema.required).toEqual(["contest_id"]);
@@ -259,10 +282,10 @@ describe("createMcpSession — tools/list", () => {
   });
 
   it("pages_update advertises entry_methods, including the custom-link row shape", () => {
-    // callTool forwards args verbatim (no allowlist), so an undeclared field
-    // WOULD reach the API — but the advertised schema is the only place an
-    // agent can learn the shape, and without this property none realistically
-    // did. The custom-link row (no actionType) is the one shape actions_catalog
+    // Since 0.3.5 callTool allowlists args against inputSchema.properties, so an
+    // undeclared field is DROPPED rather than forwarded — which makes the
+    // advertised schema the only way an agent can send entry_methods at all.
+    // The custom-link row (no actionType) is the one shape actions_catalog
     // cannot describe, so the description has to carry it.
     const tool = TOOLS.find((t) => t.name === "pages_update")!;
     const props = tool.inputSchema.properties as Record<string, any>;
@@ -274,6 +297,36 @@ describe("createMcpSession — tools/list", () => {
     expect(props.entry_methods.description).toContain("link");
     expect(props.entry_methods.description).toContain("actionsRequired");
     expect(tool.description).toContain("entry_methods");
+  });
+
+  // Outstanding item 2 of the API wave. marketing_consent is documented public-API
+  // surface (docs/using-custom-apis.md) and is accepted by createEntrySchema, but
+  // it was never declared here — so 0.3.5's allowlist began silently dropping it.
+  // It is not an audit field: marketing-sync-queue.service.ts gates ESP sync on
+  // `marketing_consent !== true`, so dropping it means an agent can import 500
+  // consented entrants, get 201 on every one, and sync none of them.
+  it("entries_create declares marketing_consent, which gates ESP sync", () => {
+    const tool = TOOLS.find((t) => t.name === "entries_create")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    expect(props.marketing_consent).toBeDefined();
+    expect(props.marketing_consent.type).toBe("boolean");
+    // The tool cannot verify consent, so the caller's obligation has to be in words.
+    expect(props.marketing_consent.description).toMatch(/consent/i);
+  });
+
+  // Outstanding item 3. status stays undeclared on purpose — pages_publish /
+  // pages_unpublish are the affordances and pages_publish enforces the
+  // future-end_date check a raw status: "active" would bypass. But an agent that
+  // sends it now gets a confusing 422 "At least one field is required", so the
+  // description has to say where status lives.
+  it("pages_update leaves status undeclared and says where it lives instead", () => {
+    const tool = TOOLS.find((t) => t.name === "pages_update")!;
+    const props = tool.inputSchema.properties as Record<string, any>;
+
+    expect(props.status).toBeUndefined();
+    expect(tool.description).toContain("pages_publish");
+    expect(tool.description).toContain("pages_unpublish");
   });
 
   it("pages_update advertises custom_css and the simple template", () => {
@@ -605,6 +658,109 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
     expect(JSON.parse(h.calls[0].init.body!)).toEqual({
       status: "active",
       end_date: "2027-01-01T00:00:00Z",
+    });
+  });
+
+  // T3a (0.3.5). Before the allowlist, `{ ...fixedBody, ...args }` forwarded any
+  // undeclared field straight to PATCH /contests/{id}, where settings.prizes is a
+  // wholesale replace — so this exact call wiped the prize list while the tool
+  // advertised destructiveHint: false.
+  it("pages_publish drops an undeclared prizes argument instead of wiping the prize list", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_publish",
+        arguments: { contest_id: "c1", prizes: [], title: "hijacked" },
+      },
+    });
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "active" });
+  });
+
+  it("pages_unpublish, whose only property is contest_id, sends nothing but the fixed status", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_unpublish",
+        arguments: { contest_id: "c1", prizes: [], entry_methods: [], status: "active" },
+      },
+    });
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ status: "draft" });
+  });
+
+  it("pages_update keeps every declared field while dropping undeclared ones", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_update",
+        arguments: { contest_id: "c1", title: "Kept", user_id: "not-mine", id: "not-mine" },
+      },
+    });
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ title: "Kept" });
+  });
+
+  // Outstanding item 3. Silently swallowing arguments is how marketing_consent
+  // went missing for a whole release: the allowlist is right, its silence is not.
+  // An agent told which keys were ignored can self-correct.
+  it("names the arguments it dropped rather than discarding them in silence", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "pages_update",
+        arguments: { contest_id: "c1", title: "Kept", status: "active", nonsense: 1 },
+      },
+    });
+    const notice = res.result.content.map((c: { text: string }) => c.text).join("\n");
+    expect(notice).toMatch(/ignored/i);
+    expect(notice).toContain("status");
+    expect(notice).toContain("nonsense");
+    // The drop itself is unchanged — the note is advisory, not a new pass-through.
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({ title: "Kept" });
+  });
+
+  it("says nothing extra when every argument was declared", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    const res = await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "pages_update", arguments: { contest_id: "c1", title: "Kept" } },
+    });
+    expect(res.result.content.length).toBe(1);
+  });
+
+  // Outstanding item 2, on the wire: the field has to survive the allowlist.
+  it("entries_create forwards marketing_consent to the API", async () => {
+    const h = harness();
+    const session = createMcpSession(h.io);
+    await rpc(session, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "entries_create",
+        arguments: { contest_id: "c1", email: "a@b.example", marketing_consent: true },
+      },
+    });
+    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
+      email: "a@b.example",
+      marketing_consent: true,
     });
   });
 

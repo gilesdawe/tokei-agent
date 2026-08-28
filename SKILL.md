@@ -470,7 +470,7 @@ claude mcp add tokei --env TOKEI_API_KEY=tokei_k_... -- npx -y tokei-agent mcp
 
 ## `--data` semantics
 
-Write commands accept `--data '<json>'` or `--data @file.json` for the raw request body (must be a JSON object). Individual field flags are merged **on top of** `--data` — **flags win** on conflict. The merged body is sent to the API untouched: the CLI does no schema validation, so the API's `422` response with per-field `error.details` **is** the validation. Fields only reachable via `--data`: `prizes`, `reward_thresholds`, and nulls (e.g. `{"end_date": null}` clears the end date — only on a page that is not active) on `pages:update`; `metadata` on `entries:create`.
+Write commands accept `--data '<json>'` or `--data @file.json` for the raw request body (must be a JSON object). Individual field flags are merged **on top of** `--data` — **flags win** on conflict. The merged body is sent to the API untouched: the CLI does no schema validation, so the API's `422` response with per-field `error.details` **is** the validation. Fields only reachable via `--data`: `prizes`, `reward_thresholds`, and nulls (e.g. `{"end_date": null}` clears the end date — only on a page that is not active) on `pages:update`; `metadata` and `marketing_consent` on `entries:create` (`marketing_consent: true` records the participant's consent and is what enables syncing them to the connected email provider — send it only when consent was genuinely collected).
 
 ## Error semantics — what to DO per status
 

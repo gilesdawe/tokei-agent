@@ -10,7 +10,7 @@ import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.4";
+export const VERSION = "0.3.5";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 

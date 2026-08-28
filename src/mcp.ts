@@ -16,7 +16,7 @@ const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
-const INSTRUCTIONS = `Tokei (tokei.io) pre-launch campaign tools. Terminology: the API objects "contest" and "promotion" are what the UI calls a "page" or "campaign" — same thing; an "entry" is a signup. Requires the TOKEI_API_KEY environment variable (create a key at tokei.io -> Dashboard -> Settings -> API Keys; read-only keys get 403 on write tools). Every result is the API's JSON plus a "rate_limit" object — when rate_limit.remaining is low, slow down; on 429 wait before retrying. 404 can mean "exists but not owned by this key's account". Webhook signing secrets (whsec_) are shown exactly once at creation.`;
+const INSTRUCTIONS = `Tokei (tokei.io) pre-launch campaign tools. Terminology: the API objects "contest" and "promotion" are what the UI calls a "page" or "campaign" — same thing; an "entry" is a signup. Requires the TOKEI_API_KEY environment variable (create a key at tokei.io -> Dashboard -> Settings -> API Keys; read-only keys get 403 on write tools). Every result is the API's JSON plus a "rate_limit" object reporting the remaining quota and its reset time; a 429 response means the quota is exhausted until that reset. 404 can mean "exists but not owned by this key's account". Webhook signing secrets (whsec_) are shown exactly once at creation.`;
 
 export interface ToolDef {
   name: string;
@@ -335,7 +335,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "pages_update",
       title: "Update promotion page",
       description:
-        "Update a page: title, description, start/end dates, prizes, reward tiers, entry methods (the action buttons on the page), appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes, reward_thresholds and entry_methods each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. Needs a read+write key.",
+        "Update a page: title, description, start/end dates, prizes, reward tiers, entry methods (the action buttons on the page), appearance, and the seven media slots (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image — use media_upload to get a public_url first). At least one field; unknown fields are rejected (422). prizes, reward_thresholds and entry_methods each REPLACE the existing list wholesale — read with pages_get first, modify, send the complete list back. status is not settable here — use pages_publish / pages_unpublish. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -492,7 +492,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "pages_unpublish",
       title: "Unpublish page",
       description:
-        "Unpublish a page (status -> draft): blocks new entries only — existing entries and entrants are untouched, nothing is deleted. IMPORTANT: a draft page still renders publicly at its URL; unpublishing does not hide it from anyone with the link, it only stops new signups. Tell your user this before they rely on it to take a page down. Needs a read+write key.",
+        "Unpublish a page (status -> draft): blocks new entries only — existing entries and entrants are untouched, nothing is deleted. IMPORTANT: a draft page still renders publicly at its URL; unpublishing does not hide it from anyone with the link, it only stops new signups. It is not a way to take a page down. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: { contest_id: CONTEST_ID },
@@ -533,6 +533,11 @@ const TOOL_SPECS: ToolSpec[] = [
           metadata: {
             type: "object",
             description: "Custom key-value pairs stored with the entry.",
+          },
+          marketing_consent: {
+            type: "boolean",
+            description:
+              "Whether this participant has already given marketing consent elsewhere. true records the consent and its timestamp, and is what enables syncing them to the connected email provider. Send it only when consent was genuinely collected.",
           },
         },
         required: ["contest_id", "email"],
@@ -597,7 +602,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "webhooks_delete",
       title: "Delete webhook subscription",
       description:
-        "Delete a webhook subscription. A 404 usually means it was already deleted — safe to treat as success.",
+        "Delete a webhook subscription. Its queued and historical delivery records are deleted with it (webhook_deliveries cascades on the subscription), so past delivery attempts are no longer retrievable afterwards. A 404 usually means it was already deleted — safe to treat as success.",
       inputSchema: {
         type: "object",
         properties: {
@@ -605,7 +610,7 @@ const TOOL_SPECS: ToolSpec[] = [
         },
         required: ["webhook_id"],
       },
-      annotations: { readOnlyHint: false, destructiveHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     },
     method: "DELETE",
     pathParam: "webhook_id",
@@ -736,9 +741,21 @@ async function callTool(
   }
 
   let body: Record<string, unknown> | undefined;
+  const dropped: string[] = [];
   if (spec.hasBody) {
-    // fixedBody is the base layer; the caller's own arguments win on conflict.
-    body = { ...(spec.fixedBody ?? {}), ...args };
+    // Only declared inputSchema.properties may reach the body. Without this an
+    // undeclared field rode straight through to PATCH /contests/{id}, where
+    // settings.prizes is a wholesale replace (src/lib/api/contest-patch.ts) —
+    // so `pages_publish { contest_id, prizes: [] }` wiped the prize list under
+    // destructiveHint: false. fixedBody is the base layer; declared caller
+    // arguments still win on conflict.
+    const declared = spec.def.inputSchema.properties;
+    const allowed: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(args)) {
+      if (Object.prototype.hasOwnProperty.call(declared, name)) allowed[name] = value;
+      else dropped.push(name);
+    }
+    body = { ...(spec.fixedBody ?? {}), ...allowed };
     if (spec.pathParam !== undefined) delete body[spec.pathParam];
   }
 
@@ -766,6 +783,17 @@ async function callTool(
         text: "The whsec_ signing secret above is shown only once and cannot be retrieved again. Store it securely now.",
       });
     }
+  }
+
+  // The allowlist above is the fix for the prize wipe, but dropping arguments in
+  // SILENCE is how `marketing_consent` stayed unreachable for a whole release
+  // while every call returned 201. Naming the ignored keys lets a caller
+  // self-correct; the drop itself is unchanged.
+  if (dropped.length > 0) {
+    content.push({
+      type: "text",
+      text: `Ignored undeclared arguments, which were not sent to the API: ${dropped.join(", ")}. Check this tool's inputSchema for the field you meant.`,
+    });
   }
 
   return { content, isError: exitCode !== 0 };

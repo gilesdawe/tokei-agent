@@ -1,6 +1,6 @@
 {
   "name": "tokei-agent",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Control your Tokei (tokei.io) pre-launch and waitlist campaigns from AI agents and the command line.",
   "type": "module",
   "bin": {
