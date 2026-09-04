@@ -309,7 +309,7 @@ What the skins look like — use this to match the user's reference point:
 - `showcase` — a dynamic two-column layout with warm colors and platform-styled buttons. Product-forward — the natural fit for a Product Hunt-style launch page.
 - `future` — a dark, immersive game-style skin for bold, high-impact pages (gaming and tech audiences).
 
-**`actions:catalog`** — every entry-action type Tokei supports: label, description, default points, platform, whether it's trust-based/verifiable, and — for the 25 types writable as an `entry_methods` row — the exact `config` fields `pages:update` accepts for that type. This is the **authoritative** per-type reference; nothing below restates it. Same list for every key (not scoped to your account, no pagination). Flags: `--type <actionType>` (a value matching no action type is `400`).
+**`actions:catalog`** — every entry-action type Tokei supports: label, description, default points, platform, whether it's trust-based/verifiable, and — for the 26 types writable as an `entry_methods` row — the exact `config` fields `pages:update` accepts for that type. This is the **authoritative** per-type reference; nothing below restates it. Same list for every key (not scoped to your account, no pagination). Flags: `--type <actionType>` (a value matching no action type is `400`).
 
 ```sh
 tokei-agent actions:catalog --type twitter_follow
@@ -367,7 +367,7 @@ tokei-agent pages:clone --title "Spring Launch Waitlist" --template product-hunt
 ```sh
 tokei-agent media:upload ./hero.png
 tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
-  --image-video https://xyz.supabase.co/storage/v1/object/public/tokei-public/api-uploads/u1/<uuid>.png
+  --image-video https://media.tokei.io/api-uploads/u1/<uuid>.png
 ```
 
 Things that surprise agents:
@@ -396,13 +396,14 @@ tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
   --template showcase --dark-mode true --primary-color "#7d78c6"
 ```
 
-**`entry_methods`** — reachable only via `--data` (max 30 rows, ~64KB body cap on this route only, raised from the shared 10KB to fit it). Five things to know:
+**`entry_methods`** — reachable only via `--data` (max 30 rows, ~64KB body cap on this route only, raised from the shared 10KB to fit it). Six things to know:
 
-1. **Full-array replace, same as Rule 3 — always `pages:get` → modify → `pages:update`.** There is no per-row patch: `[]` clears every entry method, and omitting the field leaves the stored array untouched. Two row shapes: an **action row** `{actionType, label, points?, config?, requireVerification?}` — `actionType` must be one of the 25 writable types from `actions:catalog` — or a **link row** with no `actionType`: `{label, points?, link, actionsRequired?}` — a plain http(s) button to any URL, for anything the catalog has no action for; `actionsRequired` (0-20, link rows only) hides the row until the entrant has completed that many other actions. Unknown keys (`icon`, `config.type`, the nine legacy `<platform>Config` duplicates) are stripped, not stored, so echoing back a row you just read is always safe. `icon`/`config.type` are always server-derived from `actionType`; whatever you send for them is ignored.
+1. **Full-array replace, same as Rule 3 — always `pages:get` → modify → `pages:update`.** There is no per-row patch: `[]` clears every entry method, and omitting the field leaves the stored array untouched. Two row shapes: an **action row** `{id?, actionType, label, points?, config?, requireVerification?}` — `actionType` must be one of the 26 writable types from `actions:catalog` — or a **link row** with no `actionType`: `{id?, label, points?, link, actionsRequired?}` — a plain http(s) button to any URL, for anything the catalog has no action for; `actionsRequired` (0-20, link rows only) hides the row until the entrant has completed that many other actions. Unknown keys (`icon`, `config.type`, the ten legacy `<platform>Config` duplicates) are stripped, not stored, so echoing back a row you just read is always safe. `icon`/`config.type` are always server-derived from `actionType`; whatever you send for them is ignored.
 2. **`points` may not render as sent.** `0` means unset — the renderer falls back to the type's default. Any type with an `entryValueSettingKey` (see `actions:catalog`) has its displayed points overridden by `settings.<type>_entry_value` when the owner has configured one, and Product Hunt (`producthunt_follow`, `producthunt_vote`) and all three Steam types go further — their points are **hard-substituted with the platform default at render**, unconditionally. Also: **`pages:get` already returns the EFFECTIVE points** (overrides applied), not the raw stored value, so an untouched `pages:get` → `pages:update` round-trip silently persists that effective number into storage in place of whatever was originally configured.
 3. **Some types need a deployment prerequisite — warn the human before adding one.** All 5 `twitter_*` types and `linkedin_share`/`linkedin_post` need participant OAuth configured on this deployment; `discord_join` needs Discord OAuth and has no working verification at all, so its points are awarded on trust regardless; all 3 `steam_*` types need Steam login. `actions:catalog`'s `needs` field says this per type — `null` means no prerequisite. Facebook, Instagram, TikTok, Twitch, Product Hunt, `linkedin_follow`, `linkedin_company_follow` and link rows have none — safe to add without asking.
 4. Draft/publish semantics are unchanged by any of this. Unknown keys are stripped on the way in, never stored.
 5. **Link-row rules:** a label that doesn't start with `"Visit Our "` renders as a non-clickable generic row; the clickable, credited path also requires the page to have a `campaign_url` configured.
+6. **Rows of one `actionType` are capped, and can carry a stable `id`.** At most 5 rows may share one `actionType` — but only for `twitter_follow`, `instagram_follow` and `facebook_visit_page`; every other type, including one that reads as duplicate-eligible in `actions:catalog`, is capped at 1. Exceeding it is `422 VALIDATION_ERROR`: `Too many "twitter_follow" entry methods (max 5 per promotion).` for the three types above, `Only one "tiktok_follow" entry method is allowed per promotion.` for everything else. `id` (optional, `[A-Za-z0-9_-]`, max 64 chars) gives a row stable identity across a `pages:get` → modify → `pages:update` round-trip once a page holds several rows of one type — never required, and no pre-existing row has one. Two rows sharing an `id` is also `422`: `Duplicate entry method id "<id>" (already used at index <n>).`
 
 ```sh
 tokei-agent pages:get "$PAGE" | jq '.data.entry_methods'   # always read first (Rule 3)

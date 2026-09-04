@@ -844,33 +844,34 @@ describe("createMcpSession — tools/call wiring to the HTTP layer", () => {
   });
 });
 
-const MEDIA_TICKET_DATA = {
-  upload_url:
-    "https://xyz.supabase.co/storage/v1/object/upload/sign/tokei-public/api-uploads/u1/uuid.png?token=tok",
-  token: "tok",
-  method: "PUT",
-  headers: { "content-type": "image/png", "x-upsert": "false" },
-  bucket: "tokei-public",
+/** The 201 body POST /api/v1/media answers with (Phase 1 item 8). */
+const MEDIA_UPLOADED_DATA = {
+  bucket: "tokei-media",
   path: "api-uploads/u1/uuid.png",
-  public_url: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/api-uploads/u1/uuid.png",
+  public_url: "https://media.tokei.io/api-uploads/u1/uuid.png",
   content_type: "image/png",
   filename: "hero.png",
-  max_bytes: 5242880,
-  expires_in: 7200,
-  expires_at: "2026-07-26T12:00:00.000Z",
+  size_bytes: 150,
+  backend: "r2",
 };
 
 describe("createMcpSession — tools/call media_upload", () => {
-  it("does the two-step upload (POST ticket, PUT bytes) and returns the public_url", async () => {
-    const h = harness({ response: jsonRes({ success: true, data: MEDIA_TICKET_DATA }) });
-    const putCalls: { url: string; init: { method: string; headers: Record<string, string>; body: Uint8Array } }[] =
-      [];
+  it("does ONE multipart POST and returns the public_url", async () => {
+    const h = harness();
+    const uploadCalls: {
+      url: string;
+      init: { method: string; headers: Record<string, string>; body: Uint8Array };
+    }[] = [];
     (h.io as any).binaryFetchImpl = async (
       url: string,
       init: { method: string; headers: Record<string, string>; body: Uint8Array },
     ) => {
-      putCalls.push({ url, init });
-      return { status: 200, headers: { get: () => null }, text: async () => "" };
+      uploadCalls.push({ url, init });
+      return {
+        status: 201,
+        headers: { get: () => null },
+        text: async () => JSON.stringify({ success: true, data: MEDIA_UPLOADED_DATA }),
+      };
     };
     (h.io as any).readFileBytes = (_path: string) => new Uint8Array(150).fill(3);
 
@@ -883,22 +884,23 @@ describe("createMcpSession — tools/call media_upload", () => {
     });
 
     expect(res.result.isError).toBe(false);
-    expect(h.calls).toHaveLength(1);
-    const jsonUrl = new URL(h.calls[0].url);
-    expect(jsonUrl.pathname).toBe("/api/v1/media");
-    expect(h.calls[0].init.method).toBe("POST");
-    expect(JSON.parse(h.calls[0].init.body!)).toEqual({
-      filename: "hero.png",
-      content_type: "image/png",
-      size_bytes: 150,
-    });
+    // The ticket round-trip is gone: no JSON request at all.
+    expect(h.calls).toEqual([]);
+    expect(uploadCalls).toHaveLength(1);
 
-    expect(putCalls).toHaveLength(1);
-    expect(putCalls[0].url).toBe(MEDIA_TICKET_DATA.upload_url);
+    const url = new URL(uploadCalls[0].url);
+    expect(url.pathname).toBe("/api/v1/media");
+    expect(uploadCalls[0].init.method).toBe("POST");
+    expect(uploadCalls[0].init.headers["Content-Type"]).toMatch(
+      /^multipart\/form-data; boundary=.+/,
+    );
+    expect(Buffer.from(uploadCalls[0].init.body).toString("latin1")).toContain(
+      'filename="hero.png"',
+    );
 
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.success).toBe(true);
-    expect(payload.data.public_url).toBe(MEDIA_TICKET_DATA.public_url);
+    expect(payload.data.public_url).toBe(MEDIA_UPLOADED_DATA.public_url);
   });
 
   it("missing file_path -> tool error, isError true, no HTTP calls", async () => {

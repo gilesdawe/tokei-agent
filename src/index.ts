@@ -10,7 +10,7 @@ import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.5";
+export const VERSION = "0.3.6";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -574,11 +574,10 @@ Commands (write — need a read+write API key):
                                 --description <d>  --prize <name>  --end-date <iso>
                                 --campaign-url <url>  --image-url <url>
                                 --status draft|active  --idempotency-key <k>  --data
-  media:upload <file>         Upload an image or video (two-step: request a
-                              signed ticket, PUT the bytes) and print a
-                              public_url to feed into pages:update's media
-                              flags below. ≤5MB per file — the signed-upload
-                              bucket caps this for video too, not just images.
+  media:upload <file>         Upload an image or video (one multipart POST) and
+                              print a public_url to feed into pages:update's
+                              media flags below. ≤5MB per file — the cap applies
+                              to video too, not just images.
                               Content type is inferred from the extension
                               (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov);
                               override with --content-type <type>.
@@ -587,10 +586,15 @@ Commands (write — need a read+write API key):
                               via --data. Each of those three REPLACES the whole
                               list — read with pages:get first, modify, send back.
                               An entry_methods row is either an action row
-                              {actionType,label,points?,config?,requireVerification?}
+                              {id?,actionType,label,points?,config?,requireVerification?}
                               (actionType from actions:catalog) or a custom link
-                              {label,points?,link,actionsRequired?} with no
-                              actionType, e.g.
+                              {id?,label,points?,link,actionsRequired?} with no
+                              actionType. id (optional, [A-Za-z0-9_-], max 64
+                              chars) gives a row stable identity; duplicate ids
+                              in one array are a 422. At most 5 rows may share
+                              one actionType for twitter_follow, instagram_follow
+                              and facebook_visit_page — every other type is
+                              capped at 1; exceeding it is also a 422. E.g.
                                 --data '{"entry_methods":[{"label":"Read the
                                 Newsletter","points":2,"link":"https://x.com/n"}]}'
                                 --title <t>  --description <d>
@@ -687,9 +691,10 @@ export async function main(argv: string[], io: Io): Promise<number> {
     return 0;
   }
 
-  // media:upload is a two-call flow (POST a ticket, then PUT the bytes) that
-  // doesn't fit the single-request CommandSpec shape, so it's handled here,
-  // ahead of the COMMANDS table lookup.
+  // media:upload sends file bytes as multipart/form-data rather than a JSON
+  // body, so it doesn't fit the CommandSpec shape and is handled here, ahead
+  // of the COMMANDS table lookup. (It was a two-call ticket flow until the R2
+  // cutover; it is one POST now, but it still doesn't fit CommandSpec.)
   if (command === "media:upload") {
     const filePath = positionals[0];
     if (filePath === undefined) {
@@ -716,7 +721,6 @@ export async function main(argv: string[], io: Io): Promise<number> {
       contentTypeOverride: flags["content-type"],
       apiKey,
       baseUrl,
-      fetchImpl: io.fetchImpl,
       binaryFetchImpl: io.binaryFetchImpl,
       readFileBytes: io.readFileBytes,
     });

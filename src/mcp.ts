@@ -51,7 +51,7 @@ interface ToolSpec {
   // Append a one-time-secret notice when the response contains a whsec_ secret.
   warnSecretOnce?: boolean;
   // Escape hatch for tools that don't fit the generic single-request HTTP
-  // path (e.g. media_upload's two-step POST-ticket-then-PUT-bytes flow).
+  // path (e.g. media_upload's multipart POST).
   // Checked at the top of callTool, before buildPath/query/body/request().
   handler?: (args: Record<string, unknown>, io: Io) => Promise<ToolResult>;
 }
@@ -379,7 +379,7 @@ const TOOL_SPECS: ToolSpec[] = [
             type: "array",
             maxItems: 30,
             description:
-              "The page's entry actions. Replaces the list wholesale; [] clears every action. Two row shapes. ACTION ROW: {actionType, label, points?, config?, requireVerification?} — actionType must be one of the writable types from actions_catalog, and config's keys are that type's `fields`. CUSTOM LINK ROW: {label, points?, link, actionsRequired?} with NO actionType — a plain http(s) button to any URL, for anything the catalog has no action for; actionsRequired (0-20) hides it until the entrant has completed that many other actions. icon and config.type are server-derived and ignored if sent. label is 1-100 chars, points 0-100 (0 means 'use the action's default'). Labels starting with 'Visit Our ' are reserved for the page's own campaign-URL button — the dashboard rewrites those.",
+              "The page's entry actions. Replaces the list wholesale; [] clears every action. Two row shapes, both may carry an optional id (string, 1-64 chars, [A-Za-z0-9_-] only) for stable per-row identity — never required, and no pre-existing row has one; two rows sharing an id in the same array is a 422: Duplicate entry method id \"<id>\" (already used at index <n>). ACTION ROW: {id?, actionType, label, points?, config?, requireVerification?} — actionType must be one of the writable types from actions_catalog, and config's keys are that type's `fields`. CUSTOM LINK ROW: {id?, label, points?, link, actionsRequired?} with NO actionType — a plain http(s) button to any URL, for anything the catalog has no action for; actionsRequired (0-20) hides it until the entrant has completed that many other actions. icon and config.type are server-derived and ignored if sent. label is 1-100 chars, points 0-100 (0 means 'use the action's default'). Labels starting with 'Visit Our ' are reserved for the page's own campaign-URL button — the dashboard rewrites those. At most 5 rows may share one actionType, and only for twitter_follow, instagram_follow and facebook_visit_page; every other actionType is capped at 1 — exceeding it is a 422: Too many \"twitter_follow\" entry methods (max 5 per promotion). / Only one \"tiktok_follow\" entry method is allowed per promotion. for everything else.",
             items: { type: "object" },
           },
           template: {
@@ -419,7 +419,7 @@ const TOOL_SPECS: ToolSpec[] = [
           image_video: {
             type: ["string", "null"],
             description:
-              "Hero media — an image or a video URL, typically the public_url from media_upload. Must be an https Supabase storage or Cloudinary URL (media_upload's output already qualifies). null clears it.",
+              "Hero media — an image or a video URL, typically the public_url from media_upload. Must be an https Tokei media, Supabase storage or Cloudinary URL (media_upload's output already qualifies). null clears it.",
           },
           secondary_image: {
             type: ["string", "null"],
@@ -621,7 +621,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "media_upload",
       title: "Upload media file",
       description:
-        "Upload an image or video from local disk (two-step: this call requests a signed upload ticket, then PUTs the file bytes to it) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. The signed-upload bucket caps uploads at 5MB — applies to video as well as images, so a >5MB file fails at the PUT step with a 413 from storage, not from Tokei. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
+        "Upload an image or video from local disk (one multipart POST) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. Uploads are capped at 5MB — applies to video as well as images, and a larger file is rejected before it is sent. The bytes are verified server-side against the declared type for images and video/mp4 (not webm or quicktime), so a mislabelled file of those types is a 422. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -640,7 +640,7 @@ const TOOL_SPECS: ToolSpec[] = [
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    // Unused — media_upload bypasses the generic single-request path via
+    // Unused — media_upload bypasses the generic JSON request path via
     // `handler` below, but buildPath is a required field on ToolSpec.
     buildPath: () => "/media",
     handler: async (args, io) => {
@@ -658,7 +658,6 @@ const TOOL_SPECS: ToolSpec[] = [
         contentTypeOverride,
         apiKey,
         baseUrl: io.env.TOKEI_API_URL || DEFAULT_BASE_URL,
-        fetchImpl: io.fetchImpl,
         binaryFetchImpl: io.binaryFetchImpl,
         readFileBytes: io.readFileBytes,
       });
@@ -724,7 +723,7 @@ async function callTool(
   }
 
   // Escape hatch for tools that don't fit the generic single-request HTTP
-  // path below (media_upload's two-step POST-ticket-then-PUT-bytes flow).
+  // path below (media_upload's multipart POST).
   if (spec.handler) {
     return spec.handler(args, io);
   }

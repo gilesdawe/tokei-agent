@@ -1,17 +1,21 @@
-// media:upload — shared two-step upload used by BOTH the CLI command and the
-// MCP media_upload tool. Step 1: POST /api/v1/media (via the existing
-// request()) returns a short-lived signed-upload ticket. Step 2: raw PUT of
-// the file bytes to the ticket's absolute upload_url, with exactly its
-// `headers` (the signing token lives in the URL's own query string — no
-// Authorization header). Nothing durable exists until step 2 succeeds.
+// media:upload — shared upload used by BOTH the CLI command and the MCP
+// media_upload tool. ONE request: POST /api/v1/media as multipart/form-data
+// with a `file` part; the server stores the bytes and answers 201 with the
+// object.
+//
+// This replaced a two-step signed-ticket flow (POST for a ticket, then a raw
+// PUT to Supabase) in Phase 1 item 8. R2 has no RLS and therefore no equivalent
+// of a Supabase signed upload token, so the ticket shape cannot survive the
+// migration. The server accepts multipart whether or not R2 is switched on, so
+// this client works against both — it is not coupled to the cutover.
 //
 // Deliberately imports from NEITHER index.ts NOR mcp.ts (only from http.ts,
 // which imports nothing) — index.ts and mcp.ts already have a lazy import
 // cycle between them (mcp.ts imports Io/VERSION from index.ts; index.ts
 // imports createMcpSession from mcp.ts), and this module is imported by both,
 // so it must not deepen that cycle.
-import { putBinary, request } from "./http.js";
-import type { BinaryFetchLike, FetchLike } from "./http.js";
+import { requestMultipart } from "./http.js";
+import type { BinaryFetchLike } from "./http.js";
 
 /**
  * Client-side mirror of CONTENT_TYPE_TO_EXT in src/lib/api/media-upload.ts
@@ -19,8 +23,8 @@ import type { BinaryFetchLike, FetchLike } from "./http.js";
  * The CLI cannot import app code (separate package, separate build target),
  * so this is duplicated by necessity — keep the two in sync by hand if the
  * server's MEDIA_CONTENT_TYPES allowlist ever changes. Server side is the
- * source of truth; this is only used to pick a default before step 1, which
- * validates for real.
+ * source of truth; this only labels the part before sending, and the server
+ * validates the bytes for real.
  */
 export const EXT_TO_CONTENT_TYPE: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -58,7 +62,6 @@ export interface UploadMediaArgs {
   contentTypeOverride?: string;
   apiKey: string;
   baseUrl: string;
-  fetchImpl: FetchLike;
   // Optional so embedders without a filesystem / binary fetch can omit them
   // (the upload then reports a usage error) — same idiom as Io.readFile.
   binaryFetchImpl?: BinaryFetchLike;
@@ -75,7 +78,6 @@ export async function uploadMedia(args: UploadMediaArgs): Promise<UploadMediaOut
     contentTypeOverride,
     apiKey,
     baseUrl,
-    fetchImpl,
     binaryFetchImpl,
     readFileBytes,
   } = args;
@@ -106,7 +108,7 @@ export async function uploadMedia(args: UploadMediaArgs): Promise<UploadMediaOut
   if (bytes.length > MEDIA_MAX_BYTES) {
     return {
       kind: "usage_error",
-      message: `${filePath} is ${bytes.length} bytes, over the 5MB (${MEDIA_MAX_BYTES} byte) signed-upload bucket limit — this applies to video as well as images.`,
+      message: `${filePath} is ${bytes.length} bytes, over the 5MB (${MEDIA_MAX_BYTES} byte) upload limit — this applies to video as well as images.`,
     };
   }
   if (bytes.length < MEDIA_MIN_BYTES) {
@@ -116,60 +118,21 @@ export async function uploadMedia(args: UploadMediaArgs): Promise<UploadMediaOut
     };
   }
 
-  const filename = basename(filePath);
-  const step1 = await request(
+  const result = await requestMultipart(
     {
       baseUrl,
       apiKey,
       path: "/media",
-      method: "POST",
-      body: { filename, content_type: contentType, size_bytes: bytes.length },
+      filename: basename(filePath),
+      contentType,
+      bytes,
     },
-    fetchImpl,
+    binaryFetchImpl,
   );
-  if (step1.exitCode !== 0) {
-    return { kind: "result", exitCode: 1, payload: step1.payload };
-  }
 
-  const step1Payload = step1.payload as { data?: Record<string, unknown>; rate_limit?: unknown };
-  const data = step1Payload.data ?? {};
-  const uploadUrl = data.upload_url as string;
-  const uploadHeaders = (data.headers as Record<string, string>) ?? {};
-
-  const putResult = await putBinary(uploadUrl, bytes, uploadHeaders, binaryFetchImpl);
-  if (!putResult.ok) {
-    const capNote =
-      putResult.status === 413
-        ? " The signed-upload bucket caps uploads at 5MB (applies to video too) — Supabase Storage rejected this one, not Tokei."
-        : "";
-    return {
-      kind: "result",
-      exitCode: 1,
-      payload: {
-        ok: false,
-        error: {
-          type: "upload_failed",
-          stage: "storage_put",
-          status: putResult.status,
-          message: `Storage upload failed with status ${putResult.status}.${capNote}`,
-        },
-      },
-    };
-  }
-
-  return {
-    kind: "result",
-    exitCode: 0,
-    payload: {
-      success: true,
-      data: {
-        public_url: data.public_url,
-        path: data.path,
-        content_type: data.content_type,
-        filename: data.filename,
-        size_bytes: bytes.length,
-      },
-      rate_limit: step1Payload.rate_limit ?? null,
-    },
-  };
+  // The 201 body already carries public_url / path / content_type / filename /
+  // size_bytes, plus `backend` and `bucket`, and http.ts has attached
+  // rate_limit — so it is passed through rather than rebuilt. On failure this
+  // is the API's own error body, exactly as every other command reports one.
+  return { kind: "result", exitCode: result.exitCode, payload: result.payload };
 }

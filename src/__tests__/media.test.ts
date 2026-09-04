@@ -1,8 +1,12 @@
 /** @jest-environment node */
 // Tests for the media:upload CLI command / MCP tool's shared implementation
-// (cli/src/media.ts): client-side validation, the two-step upload (POST
-// ticket, PUT bytes), and error mapping. Mirrors the harness pattern in
-// commands.test.ts.
+// (cli/src/media.ts): client-side validation, the single multipart POST, and
+// error mapping. Mirrors the harness pattern in commands.test.ts.
+//
+// The upload went from two steps (POST for a signed ticket, then a raw PUT to
+// Supabase) to one multipart POST in Phase 1 item 8 — R2 has no equivalent of a
+// Supabase signed upload token. The client-side guards either side of it are
+// unchanged, which is why those tests are untouched.
 import { main } from "../index.js";
 import type { Io } from "../index.js";
 import type { HttpResponse } from "../http.js";
@@ -24,7 +28,7 @@ function jsonRes(body: unknown, status = 200): HttpResponse {
   };
 }
 
-function binRes(status: number, text = ""): HttpResponse {
+function textRes(status: number, text = ""): HttpResponse {
   return {
     status,
     headers: { get: () => null },
@@ -32,27 +36,41 @@ function binRes(status: number, text = ""): HttpResponse {
   };
 }
 
-const TICKET_DATA = {
-  upload_url:
-    "https://xyz.supabase.co/storage/v1/object/upload/sign/tokei-public/api-uploads/u1/uuid.png?token=tok",
-  token: "tok",
-  method: "PUT",
-  headers: { "content-type": "image/png", "x-upsert": "false" },
-  bucket: "tokei-public",
+/** The 201 body POST /api/v1/media answers with for a multipart upload. */
+const UPLOADED_DATA = {
+  bucket: "tokei-media",
   path: "api-uploads/u1/uuid.png",
-  public_url: "https://xyz.supabase.co/storage/v1/object/public/tokei-public/api-uploads/u1/uuid.png",
+  public_url: "https://media.tokei.io/api-uploads/u1/uuid.png",
   content_type: "image/png",
-  filename: "hero.png",
-  max_bytes: 5242880,
-  expires_in: 7200,
-  expires_at: "2026-07-26T12:00:00.000Z",
+  filename: "hero.PNG",
+  size_bytes: 150,
+  backend: "r2",
 };
+
+/**
+ * Pull the single `file` part back out of a multipart body, so the tests assert
+ * what the server will actually receive rather than a byte blob.
+ */
+function decodePart(
+  contentTypeHeader: string,
+  body: Uint8Array,
+): { headers: string; bytes: Uint8Array } {
+  const boundary = /boundary=(.+)$/.exec(contentTypeHeader)?.[1];
+  if (!boundary) throw new Error(`no boundary in ${contentTypeHeader}`);
+
+  const text = Buffer.from(body).toString("latin1");
+  const headerEnd = text.indexOf("\r\n\r\n");
+  const headers = text.slice(text.indexOf("\r\n") + 2, headerEnd);
+  const bodyStart = headerEnd + 4;
+  const bodyEnd = text.lastIndexOf(`\r\n--${boundary}--`);
+  return { headers, bytes: body.slice(bodyStart, bodyEnd) };
+}
 
 interface JsonCall {
   url: string;
   init: { method: string; headers: Record<string, string>; body?: string };
 }
-interface PutCall {
+interface UploadCall {
   url: string;
   init: { method: string; headers: Record<string, string>; body: Uint8Array };
 }
@@ -62,14 +80,14 @@ interface Harness {
   out: string[];
   err: string[];
   jsonCalls: JsonCall[];
-  putCalls: PutCall[];
+  uploadCalls: UploadCall[];
 }
 
 function harness(
   opts: {
     env?: Record<string, string | undefined>;
     jsonResponse?: HttpResponse | Error;
-    putResponse?: HttpResponse | Error;
+    uploadResponse?: HttpResponse | Error;
     files?: Record<string, Uint8Array>;
     omitReadFileBytes?: boolean;
     omitBinaryFetch?: boolean;
@@ -78,9 +96,10 @@ function harness(
   const out: string[] = [];
   const err: string[] = [];
   const jsonCalls: JsonCall[] = [];
-  const putCalls: PutCall[] = [];
-  const jsonResponse = opts.jsonResponse ?? jsonRes({ success: true, data: TICKET_DATA });
-  const putResponse = opts.putResponse ?? binRes(200);
+  const uploadCalls: UploadCall[] = [];
+  const jsonResponse = opts.jsonResponse ?? jsonRes({ success: true, data: UPLOADED_DATA }, 201);
+  const uploadResponse =
+    opts.uploadResponse ?? jsonRes({ success: true, data: UPLOADED_DATA }, 201);
   const files = opts.files ?? {};
 
   const base: Io = {
@@ -101,9 +120,9 @@ function harness(
       url: string,
       init: { method: string; headers: Record<string, string>; body: Uint8Array },
     ) => {
-      putCalls.push({ url, init });
-      if (putResponse instanceof Error) throw putResponse;
-      return putResponse;
+      uploadCalls.push({ url, init });
+      if (uploadResponse instanceof Error) throw uploadResponse;
+      return uploadResponse;
     };
   }
   if (!opts.omitReadFileBytes) {
@@ -112,7 +131,7 @@ function harness(
       throw new Error(`ENOENT: no such file, open '${path}'`);
     };
   }
-  return { io: base, out, err, jsonCalls, putCalls };
+  return { io: base, out, err, jsonCalls, uploadCalls };
 }
 
 describe("contentTypeForPath", () => {
@@ -138,7 +157,7 @@ describe("main — media:upload", () => {
     expect(errBody.error.message).toMatch(/\.jpg/);
     expect(errBody.error.message).toMatch(/\.mp4/);
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 
   it("file over 5MB -> usage error mentioning 5MB, zero HTTP calls", async () => {
@@ -148,7 +167,7 @@ describe("main — media:upload", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.message).toMatch(/5MB/);
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 
   it("file under the 100 byte minimum -> usage error, zero HTTP calls", async () => {
@@ -159,75 +178,91 @@ describe("main — media:upload", () => {
     const errBody = JSON.parse(h.err[0]);
     expect(errBody.error.type).toBe("usage_error");
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 
-  it("happy path: step-1 POST with exact JSON body, step-2 PUT with exact headers/body, success envelope", async () => {
+  it("happy path: ONE multipart POST carrying the file part, success envelope", async () => {
     const bytes = new Uint8Array(150).fill(7);
     const h = harness({ files: { "photos/hero.PNG": bytes } });
     const code = await main(["media:upload", "photos/hero.PNG"], h.io);
     expect(code).toBe(0);
 
-    expect(h.jsonCalls).toHaveLength(1);
-    const jsonUrl = new URL(h.jsonCalls[0].url);
-    expect(jsonUrl.origin + jsonUrl.pathname).toBe("https://tokei.io/api/v1/media");
-    expect(h.jsonCalls[0].init.method).toBe("POST");
-    expect(JSON.parse(h.jsonCalls[0].init.body!)).toEqual({
-      filename: "hero.PNG",
-      content_type: "image/png",
-      size_bytes: 150,
-    });
+    // No JSON call at all — the ticket round-trip is gone.
+    expect(h.jsonCalls).toEqual([]);
+    expect(h.uploadCalls).toHaveLength(1);
 
-    expect(h.putCalls).toHaveLength(1);
-    expect(h.putCalls[0].url).toBe(TICKET_DATA.upload_url);
-    expect(h.putCalls[0].init.method).toBe("PUT");
-    expect(h.putCalls[0].init.headers).toEqual({ "content-type": "image/png", "x-upsert": "false" });
-    expect(h.putCalls[0].init.body).toEqual(bytes);
+    const call = h.uploadCalls[0];
+    const url = new URL(call.url);
+    expect(url.origin + url.pathname).toBe("https://tokei.io/api/v1/media");
+    expect(call.init.method).toBe("POST");
+    expect(call.init.headers.Authorization).toBe("Bearer tokei_k_test");
+    expect(call.init.headers["Content-Type"]).toMatch(/^multipart\/form-data; boundary=.+/);
+
+    const part = decodePart(call.init.headers["Content-Type"], call.init.body);
+    expect(part.headers).toContain('name="file"');
+    expect(part.headers).toContain('filename="hero.PNG"');
+    expect(part.headers).toContain("Content-Type: image/png");
+    expect(part.bytes).toEqual(bytes);
 
     const stdout = JSON.parse(h.out[0]);
     expect(stdout.success).toBe(true);
-    expect(stdout.data.public_url).toBe(TICKET_DATA.public_url);
-    expect(stdout.data.path).toBe(TICKET_DATA.path);
+    expect(stdout.data.public_url).toBe(UPLOADED_DATA.public_url);
+    expect(stdout.data.path).toBe(UPLOADED_DATA.path);
     expect(stdout.data.size_bytes).toBe(150);
     expect(stdout.rate_limit).toEqual({ limit: 50, remaining: 49, reset: 1753000000 });
   });
 
-  it("step-1 422 -> exit 1, envelope printed, no PUT call", async () => {
+  it("422 from the API -> exit 1, the API's own envelope printed", async () => {
     const errBody = {
       success: false,
       error: { code: "VALIDATION_ERROR", message: "Request body failed validation.", status: 422 },
     };
     const h = harness({
       files: { "hero.png": new Uint8Array(150).fill(1) },
-      jsonResponse: jsonRes(errBody, 422),
+      uploadResponse: jsonRes(errBody, 422),
     });
     const code = await main(["media:upload", "hero.png"], h.io);
     expect(code).toBe(1);
     const stdout = JSON.parse(h.out[0]);
     expect(stdout.error.code).toBe("VALIDATION_ERROR");
-    expect(h.putCalls).toEqual([]);
   });
 
-  it("step-2 413 from storage -> upload_failed/storage_put envelope mentioning 5MB, exit 1", async () => {
+  it("413 from the API -> exit 1, reported like any other API error", async () => {
+    const errBody = {
+      success: false,
+      error: { code: "PAYLOAD_TOO_LARGE", message: "File exceeds the 5MB limit.", status: 413 },
+    };
     const h = harness({
       files: { "hero.png": new Uint8Array(150).fill(1) },
-      putResponse: binRes(413, "Payload too large"),
+      uploadResponse: jsonRes(errBody, 413),
+    });
+    const code = await main(["media:upload", "hero.png"], h.io);
+    expect(code).toBe(1);
+    const stdout = JSON.parse(h.out[0]);
+    expect(stdout.error.code).toBe("PAYLOAD_TOO_LARGE");
+    expect(stdout.error.message).toMatch(/5MB/);
+  });
+
+  it("a non-JSON error body still exits 1 with a readable envelope", async () => {
+    const h = harness({
+      files: { "hero.png": new Uint8Array(150).fill(1) },
+      uploadResponse: textRes(502, "<html>bad gateway</html>"),
     });
     const code = await main(["media:upload", "hero.png"], h.io);
     expect(code).toBe(1);
     const stdout = JSON.parse(h.out[0]);
     expect(stdout.ok).toBe(false);
-    expect(stdout.error.type).toBe("upload_failed");
-    expect(stdout.error.stage).toBe("storage_put");
-    expect(stdout.error.status).toBe(413);
-    expect(stdout.error.message).toMatch(/5MB/);
+    expect(stdout.error.type).toBe("http_error");
+    expect(stdout.error.status).toBe(502);
   });
 
   it("--content-type overrides extension inference", async () => {
     const h = harness({ files: { "clip.dat": new Uint8Array(150).fill(2) } });
     const code = await main(["media:upload", "clip.dat", "--content-type", "video/mp4"], h.io);
     expect(code).toBe(0);
-    expect(JSON.parse(h.jsonCalls[0].init.body!).content_type).toBe("video/mp4");
+    const call = h.uploadCalls[0];
+    const part = decodePart(call.init.headers["Content-Type"], call.init.body);
+    expect(part.headers).toContain("Content-Type: video/mp4");
   });
 
   it("Io without readFileBytes -> usage error, 'not supported in this environment', zero HTTP calls", async () => {
@@ -236,7 +271,7 @@ describe("main — media:upload", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.message).toMatch(/not supported in this environment/);
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 
   it("Io without binaryFetchImpl -> usage error, 'not supported in this environment', zero HTTP calls", async () => {
@@ -245,7 +280,7 @@ describe("main — media:upload", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.message).toMatch(/not supported in this environment/);
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 
   it("no <file> argument -> usage error, exit 2, zero HTTP calls", async () => {
@@ -254,6 +289,6 @@ describe("main — media:upload", () => {
     expect(code).toBe(2);
     expect(JSON.parse(h.err[0]).error.type).toBe("usage_error");
     expect(h.jsonCalls).toEqual([]);
-    expect(h.putCalls).toEqual([]);
+    expect(h.uploadCalls).toEqual([]);
   });
 });
