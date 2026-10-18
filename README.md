@@ -82,10 +82,10 @@ Write (needs a read+write key):
 | Command                       | Does                                                                     |
 | ----------------------------- | ------------------------------------------------------------------------ |
 | `pages:clone`                 | Create a page by cloning one you own, a named template, or the starter. 20/day cap |
-| `media:upload <file>`         | Upload an image or video, get back a `public_url` for `pages:update`. ≤5MB per file (video too) |
+| `media:upload <file>`         | Upload an image or video, get back a `public_url` for `pages:update`. ≤4MB per file (video too) |
 | `pages:update <contestId>`    | Update title, description, dates, prizes, reward tiers, appearance (incl. the Custom template: `--template simple` / `--custom-css`), media, and entry actions (`entry_methods`, incl. custom-link rows) |
 | `pages:publish <contestId>`   | Take a page live (needs a future `end_date`)                             |
-| `pages:unpublish <contestId>` | Back to draft — blocks new signups, but the page still renders publicly  |
+| `pages:unpublish <contestId>` | Back to draft — blocks new signups and hides the page from visitors      |
 | `entries:create <contestId>`  | Add a signup                                                             |
 | `webhooks:create`             | Subscribe an HTTPS endpoint (`whsec_` secret shown once — save it!)      |
 | `webhooks:delete <webhookId>` | Remove a subscription                                                    |
@@ -168,9 +168,10 @@ Nothing is sold or shared with third parties. Data is transmitted only to:
 
 - **Tokei** (`https://tokei.io`, or the host you set in `TOKEI_API_URL`) — every
   command, to serve your request against your own account.
-- **Tokei's object storage provider** — `media:upload` only. The API returns a
-  short-lived signed upload URL and the CLI PUTs your file bytes straight to it;
-  the file becomes a public asset on your promotion page.
+- **Tokei's object storage provider** — `media:upload` only. The CLI sends the
+  file to the Tokei API, which stores it with the provider; the CLI never
+  contacts the provider itself. The file becomes a public asset on your
+  promotion page.
 
 The CLI contacts no other host.
 

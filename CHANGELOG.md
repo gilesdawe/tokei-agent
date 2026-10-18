@@ -13,6 +13,69 @@ has so far.
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-10-14
+
+### Changed
+
+- **`media:upload` cap is 4 MB, down from 5 MB.** The CLI refuses a file over
+  4 MB (or under 100 bytes) before sending it, with exit code `2` and a
+  `usage_error`. The cap covers video as well as images. The 50/day media cap now
+  counts uploads that pass validation. A rejected file uses no quota.
+- **`pages:unpublish` hides the page.** Visitors to a draft page's URL see "This
+  promotion isn't open right now" and cannot join. Only the signed-in owner still
+  sees it. `--help`, the `pages_unpublish` tool description, `SKILL.md` and
+  `README.md` no longer say a draft "still renders publicly".
+- `SKILL.md` counts 28 writable `actions:catalog` types, up from 26. The two new
+  ones are `tokei_cross_promote` and `app_download`. The CLI reads the catalog
+  live, so no code changed.
+- Hero image URLs for `pages_update` are described as `media.tokei.io` or
+  `res.cloudinary.com` URLs, replacing the retired Supabase storage wording.
+- Changing an `entry_methods` row's target keeps entrants' credit while the row
+  keeps its `id`. Omit the `id` to make a new action. The `pages_update` tool
+  description and `SKILL.md` say so.
+
+### Fixed
+
+- `SKILL.md` and `README.md` describe the one-POST `media:upload` that 0.3.6
+  introduced. The 0.3.6 package still documents the retired two-step signed
+  ticket.
+- `SKILL.md` lists three zero-count templates (`secret-codes`, `survey-system`,
+  `collect-email-list`), not two. A `secret-codes` clone forces its secret-code
+  input **off**.
+- `SKILL.md` names the deployment prerequisites that apply today (`linkedin_oidc`
+  for `linkedin_share` and `linkedin_post`, Steam login for the three `steam_*`
+  types) and no longer asks agents to warn about X/Twitter OAuth.
+- Stale comments in `cli/src/index.ts`, `cli/src/media.ts` and
+  `cli/bin/tokei-agent.mjs` that still described the two-step media flow.
+
+## [0.3.6] — 2026-09-04
+
+This entry was written on 2026-09-22. The release skipped the changelog step, so
+the 0.3.6 tarball on npm carries no entry for itself.
+
+### Fixed
+
+- **`media:upload` works again.** Tokei moved media storage to
+  `https://media.tokei.io/`, and `POST /api/v1/media` now answers `410 GONE` to
+  the two-step signed-ticket request that 0.3.5 and earlier send. The CLI command
+  and the `media_upload` MCP tool now send the file as one `multipart/form-data`
+  POST. Caps are unchanged: 5 MB per file, video included, and no
+  `application/pdf`. Anyone on 0.3.5 or older gets a 410 from `media:upload` until
+  they upgrade.
+
+### Changed
+
+- `media:upload` returns a `public_url` on `https://media.tokei.io/` instead of a
+  `…supabase.co/storage/…` URL. The `pages_update` media fields accept Tokei
+  media, Supabase storage and Cloudinary URLs.
+- `entry_methods` rows accept an optional `id` (`[A-Za-z0-9_-]`, 1–64 chars) for
+  stable per-row identity. Two rows with the same `id` in one array are a 422.
+- Up to 5 `entry_methods` rows may share one `actionType` for `twitter_follow`,
+  `instagram_follow` and `facebook_visit_page`. Every other type is capped at 1,
+  and exceeding a cap is a 422. `--help`, the `pages_update` tool description
+  and `SKILL.md` document both rules.
+- `SKILL.md` counts 26 writable `actions:catalog` types, up from 25.
+
 ## [0.3.5] — 2026-08-28
 
 ### Fixed
@@ -221,7 +284,9 @@ has so far.
   auth, JSON-only stdout with a top-level `rate_limit` object, zero runtime
   dependencies.
 
-[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.5...HEAD
+[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.7...HEAD
+[0.3.7]: https://www.npmjs.com/package/tokei-agent/v/0.3.7
+[0.3.6]: https://www.npmjs.com/package/tokei-agent/v/0.3.6
 [0.3.5]: https://www.npmjs.com/package/tokei-agent/v/0.3.5
 [0.3.4]: https://www.npmjs.com/package/tokei-agent/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/tokei-agent/v/0.3.3

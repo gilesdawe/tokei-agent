@@ -308,7 +308,7 @@ const TOOL_SPECS: ToolSpec[] = [
             type: "string",
             maxLength: 500,
             description:
-              "Hero image URL — must be an https Supabase storage (public) or res.cloudinary.com URL.",
+              "Hero image URL — must be an https media.tokei.io or res.cloudinary.com URL.",
           },
           status: {
             type: "string",
@@ -379,7 +379,7 @@ const TOOL_SPECS: ToolSpec[] = [
             type: "array",
             maxItems: 30,
             description:
-              "The page's entry actions. Replaces the list wholesale; [] clears every action. Two row shapes, both may carry an optional id (string, 1-64 chars, [A-Za-z0-9_-] only) for stable per-row identity — never required, and no pre-existing row has one; two rows sharing an id in the same array is a 422: Duplicate entry method id \"<id>\" (already used at index <n>). ACTION ROW: {id?, actionType, label, points?, config?, requireVerification?} — actionType must be one of the writable types from actions_catalog, and config's keys are that type's `fields`. CUSTOM LINK ROW: {id?, label, points?, link, actionsRequired?} with NO actionType — a plain http(s) button to any URL, for anything the catalog has no action for; actionsRequired (0-20) hides it until the entrant has completed that many other actions. icon and config.type are server-derived and ignored if sent. label is 1-100 chars, points 0-100 (0 means 'use the action's default'). Labels starting with 'Visit Our ' are reserved for the page's own campaign-URL button — the dashboard rewrites those. At most 5 rows may share one actionType, and only for twitter_follow, instagram_follow and facebook_visit_page; every other actionType is capped at 1 — exceeding it is a 422: Too many \"twitter_follow\" entry methods (max 5 per promotion). / Only one \"tiktok_follow\" entry method is allowed per promotion. for everything else.",
+              "The page's entry actions. Replaces the list wholesale; [] clears every action. Two row shapes, both may carry an optional id (string, 1-64 chars, [A-Za-z0-9_-] only) for stable per-row identity — optional on input, every stored row has one, and a row sent without one is stored as a new action. Changing a row's target keeps credit for entrants who already did it while the row keeps its id; two rows sharing an id in the same array is a 422: Duplicate entry method id \"<id>\" (already used at index <n>). ACTION ROW: {id?, actionType, label, points?, config?, requireVerification?} — actionType must be one of the writable types from actions_catalog, and config's keys are that type's `fields`. CUSTOM LINK ROW: {id?, label, points?, link, actionsRequired?} with NO actionType — a plain http(s) button to any URL, for anything the catalog has no action for; actionsRequired (0-20) hides it until the entrant has completed that many other actions. icon and config.type are server-derived and ignored if sent. label is 1-100 chars, points 0-100 (0 means 'use the action's default'). Labels starting with 'Visit Our ' are reserved for the page's own campaign-URL button — the dashboard rewrites those. At most 5 rows may share one actionType, and only for twitter_follow, instagram_follow and facebook_visit_page; every other actionType is capped at 1 — exceeding it is a 422: Too many \"twitter_follow\" entry methods (max 5 per promotion). / Only one \"tiktok_follow\" entry method is allowed per promotion. for everything else.",
             items: { type: "object" },
           },
           template: {
@@ -492,7 +492,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "pages_unpublish",
       title: "Unpublish page",
       description:
-        "Unpublish a page (status -> draft): blocks new entries only — existing entries and entrants are untouched, nothing is deleted. IMPORTANT: a draft page still renders publicly at its URL; unpublishing does not hide it from anyone with the link, it only stops new signups. It is not a way to take a page down. Needs a read+write key.",
+        "Unpublish a page (status -> draft): blocks new entries and hides the page — visitors to its URL see \"This promotion isn't open right now\"; only the signed-in owner still sees it. Existing entries and entrants are untouched, nothing is deleted, and pages_publish restores it. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: { contest_id: CONTEST_ID },
@@ -621,7 +621,7 @@ const TOOL_SPECS: ToolSpec[] = [
       name: "media_upload",
       title: "Upload media file",
       description:
-        "Upload an image or video from local disk (one multipart POST) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. Uploads are capped at 5MB — applies to video as well as images, and a larger file is rejected before it is sent. The bytes are verified server-side against the declared type for images and video/mp4 (not webm or quicktime), so a mislabelled file of those types is a 422. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
+        "Upload an image or video from local disk (one multipart POST) and return a public_url to feed into pages_update's seven media fields (image_video, secondary_image, third_image, fourth_image, fifth_image, background_image, og_image). Content type is inferred from the file extension (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov); override with content_type. Uploads are capped at 4MB — applies to video as well as images, and a larger file is rejected before it is sent. The bytes are verified server-side against the declared type for images and video/mp4 (not webm or quicktime), so a mislabelled file of those types is a 422. The stored object name is a server-generated UUID; the filename argument is only echoed back. application/pdf is not accepted. Needs a read+write key.",
       inputSchema: {
         type: "object",
         properties: {
@@ -744,7 +744,7 @@ async function callTool(
   if (spec.hasBody) {
     // Only declared inputSchema.properties may reach the body. Without this an
     // undeclared field rode straight through to PATCH /contests/{id}, where
-    // settings.prizes is a wholesale replace (src/lib/api/contest-patch.ts) —
+    // settings.prizes is a wholesale replace (src/features/public-api/model/contest-patch.ts) —
     // so `pages_publish { contest_id, prizes: [] }` wiped the prize list under
     // destructiveHint: false. fixedBody is the base layer; declared caller
     // arguments still win on conflict.

@@ -35,7 +35,7 @@ main(process.argv.slice(2), {
     },
   },
   readFile: (path) => readFileSync(path, "utf8"),
-  // media:upload's file-bytes read and step-2 signed-URL PUT. A Buffer IS a
+  // media:upload's file-bytes read and multipart POST. A Buffer IS a
   // Uint8Array, so readFileSync's return value satisfies readFileBytes as-is.
   readFileBytes: (path) => readFileSync(path),
   binaryFetchImpl: fetch,

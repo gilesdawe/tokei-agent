@@ -301,7 +301,7 @@ Example response — an **excerpt** of the real menu at the time of writing (15 
 
 Rows come back sorted by `slug`, unpaginated. The other ten at the time of writing: `discord-community`, `facebook-promotion`, `family-friends`, `prelaunch-vips`, `product-hunt`, `survey-system`, `tiktok-growth`, `twitch-growth`, `x-followers`, `youtube-contest`.
 
-`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug. A `0` there is not always a stub — two templates legitimately report `0` because their action lives on the page rather than in `entry_methods`: `secret-codes` (the single action *is* the secret code) and `survey-system` (a mandatory survey plus a photo upload). Cloning `secret-codes` gives you the code input switched on but **no codes** — codes are stored per page and are never copied, so the owner adds their own in the dashboard.
+`skin` is the page skin (`basic-new`/`showcase`/`future`) — the same vocabulary `pages:update --template` writes. `entry_method_count` is how many entry actions the template ships with. For agents: **list templates first, then clone by slug** — don't guess a slug. A `0` there is not always a stub — three templates legitimately report `0` because their action lives on the page rather than in `entry_methods`: `secret-codes` (the single action *is* the secret code), `survey-system` (a mandatory survey plus a photo upload) and `collect-email-list` (the sign-up form is the whole page). Cloning `secret-codes` keeps its code copy but switches the code input **off** and copies **no codes** — codes are stored per page and are never copied, so the owner uploads their own in the dashboard and then switches the input on.
 
 What the skins look like — use this to match the user's reference point:
 
@@ -309,7 +309,7 @@ What the skins look like — use this to match the user's reference point:
 - `showcase` — a dynamic two-column layout with warm colors and platform-styled buttons. Product-forward — the natural fit for a Product Hunt-style launch page.
 - `future` — a dark, immersive game-style skin for bold, high-impact pages (gaming and tech audiences).
 
-**`actions:catalog`** — every entry-action type Tokei supports: label, description, default points, platform, whether it's trust-based/verifiable, and — for the 26 types writable as an `entry_methods` row — the exact `config` fields `pages:update` accepts for that type. This is the **authoritative** per-type reference; nothing below restates it. Same list for every key (not scoped to your account, no pagination). Flags: `--type <actionType>` (a value matching no action type is `400`).
+**`actions:catalog`** — every entry-action type Tokei supports: label, description, default points, platform, whether it's trust-based/verifiable, and — for the 28 types writable as an `entry_methods` row — the exact `config` fields `pages:update` accepts for that type. This is the **authoritative** per-type reference; nothing below restates it. Same list for every key (not scoped to your account, no pagination). Flags: `--type <actionType>` (a value matching no action type is `400`).
 
 ```sh
 tokei-agent actions:catalog --type twitter_follow
@@ -328,7 +328,7 @@ tokei-agent actions:catalog --type twitter_follow
       { "key": "username", "type": "string", "required": true,
         "note": "X/Twitter handle. Checked for presence only — no format validation." }
     ],
-    "needs": "Requires participant X/Twitter OAuth to be configured on this deployment..."
+    "needs": null
   }
 }
 ```
@@ -362,7 +362,7 @@ tokei-agent pages:clone --title "Spring Launch Waitlist" --template product-hunt
 
 `--status active` makes the page live immediately at the returned `public_url`; the default is `draft`. Reuse an `--idempotency-key` and you get `409` with the existing page's id in `error.details` instead of a duplicate.
 
-**`media:upload <file>`** — upload an image or video and get back a `public_url` to feed into `pages:update`'s media flags (below). Two HTTP calls under the hood, both handled for you: (1) request a short-lived signed upload ticket from Tokei; (2) `PUT` the file bytes straight to a Supabase Storage host with **no `Authorization` header** — the signing token lives in that URL's own query string. Nothing is stored until step 2 succeeds, so a step-1 failure never burns anything. Content type is inferred from the file extension (`.jpg`/`.jpeg`/`.png`/`.gif`/`.webp`/`.mp4`/`.webm`/`.mov`); override it with `--content-type <type>` for an extensionless or misnamed file. `application/pdf` is not accepted — only image and video. Prints `{public_url, path, content_type, filename, size_bytes}` under `data`.
+**`media:upload <file>`** — upload an image or video and get back a `public_url` to feed into `pages:update`'s media flags (below). One `multipart/form-data` POST to Tokei: the server checks the file, stores it and answers `201`. Content type is inferred from the file extension (`.jpg`/`.jpeg`/`.png`/`.gif`/`.webp`/`.mp4`/`.webm`/`.mov`); override it with `--content-type <type>` for an extensionless or misnamed file. `application/pdf` is not accepted — only image and video. Prints `{bucket, path, public_url, content_type, filename, size_bytes, backend}` under `data`; use `public_url` as-is rather than building one from `bucket` and `path`.
 
 ```sh
 tokei-agent media:upload ./hero.png
@@ -372,9 +372,10 @@ tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
 
 Things that surprise agents:
 
-- **The 5MB bucket cap applies to the signed-upload bucket itself, not to image vs. video specifically — so video must be ≤5MB too.** This is thin for video; a real clip is likely to exceed it. There is no larger-upload path through this API today.
-- **The 50/day cap counts tickets issued (step 1), not completed uploads.** A step-1 call that never gets PUT still burns quota — don't loop calling `media:upload` speculatively.
-- **A file over 5MB fails at step 2 with a `413` from Supabase Storage, not from Tokei.** The CLI surfaces this as `{"ok": false, "error": {"type": "upload_failed", "stage": "storage_put", "status": 413, "message": "..."}}` — see the error-semantics note below; it is a different shape from the usual `error.code` envelope because it isn't a Tokei API response.
+- **The 4MB cap applies to video as well as images.** This is thin for video; a real clip is likely to exceed it. There is no larger-upload path through this API today.
+- **A file over 4MB or under 100 bytes never leaves your machine.** The CLI refuses it before sending, with exit code `2` and a `usage_error` on stderr — see the error-semantics note below.
+- **The bytes must match the declared type.** For images and `video/mp4`, the server checks the file's leading bytes, so a misnamed file is a `422` on field `file`, not a mislabelled upload.
+- **The 50/day cap counts uploads that pass validation.** A rejected file does not use quota, but a server error after validation still does — so don't loop calling `media:upload` speculatively.
 - **The stored object name is always a server-generated UUID.** The `filename` you send (or that the CLI infers from your local path) is validated and echoed back in the response, but never used to name anything — so reusing a filename never collides or overwrites.
 
 **`pages:update <contestId>`** — PATCH a page. Simple fields via flags: `--title`, `--description`, `--start-date <iso>`, `--end-date <iso>`, `--template basic-new|showcase|future|simple`, `--custom-css <css>`, `--dark-mode true|false`, `--primary-color "#7d78c6"`, `--card-width narrow|medium|wide`, and the seven media flags below. Prizes, reward tiers, nulls, or a full body via `--data`. At least one field required; unknown fields are rejected (422). `prizes` (max 20) and `reward_thresholds` (max 50) each **replace the existing list wholesale** — read the current lists with `pages:get` first, modify, and send the complete list back (Rule 3). A future `start_date` pauses new entries until then; setting `end_date` recomputes `days_left` — but a page whose winners have already been drawn rejects any `end_date` write, **setting or clearing**, with `409 WINNERS_ALREADY_SELECTED`. Clearing the date via `--data '{"end_date": null}'` also requires the page to be unpublished: an **active** page must keep a deadline (otherwise it renders as live forever while every signup is rejected), so clearing one returns `422` on field `end_date` — send `{"status": "draft", "end_date": null}` together, or a replacement date. `--title` sets the visible page headline (and the dashboard name), and `--description` accepts basic rich-text HTML which is sanitized on write, so unsupported tags come back stripped.
@@ -383,7 +384,7 @@ Appearance flags: `--template` is the page skin (`basic-new`, `showcase` or `fut
 
 **`template: "simple"` is the Custom template** (launched 2026-08-10) — bare structural markup the creator styles via `custom_css`, applied on both the hosted page and the widget embed via `--tokei-*` custom properties and `.tokei-simple-*` class hooks. `--custom-css` is a string, max 20KB, server-sanitised on write — `@import`, `<` anywhere, and URLs outside `data:`/Cloudinary/tokei.io are rejected with a `422 VALIDATION_ERROR` naming the reason, so read-back may differ from what was sent; send `--data '{"custom_css": null}'` to clear it (there is no flag spelling for null). `pages:get` returns the stored `custom_css` for any page that has one.
 
-Media flags: `--image-video <url>` (the hero — an image **or** a video), `--secondary-image <url>`, `--third-image <url>`, `--fourth-image <url>`, `--fifth-image <url>` (the additional layout block slots), `--background-image <url>` (interpolated into the page's CSS), `--og-image <url>` (social-share preview). All seven accept only an `https` URL on the app's own Supabase public storage or `res.cloudinary.com` — exactly what `media:upload`'s `public_url` produces, so the normal flow is `media:upload` then `pages:update` with the URL it printed (Rule 2). There is no flag spelling for clearing a media field to `null`; use `--data '{"og_image": null}'`.
+Media flags: `--image-video <url>` (the hero — an image **or** a video), `--secondary-image <url>`, `--third-image <url>`, `--fourth-image <url>`, `--fifth-image <url>` (the additional layout block slots), `--background-image <url>` (interpolated into the page's CSS), `--og-image <url>` (social-share preview). All seven accept only an `https` URL on `media.tokei.io` or `res.cloudinary.com` — exactly what `media:upload`'s `public_url` produces, so the normal flow is `media:upload` then `pages:update` with the URL it printed (Rule 2). There is no flag spelling for clearing a media field to `null`; use `--data '{"og_image": null}'`.
 
 ```sh
 tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
@@ -396,20 +397,21 @@ tokei-agent pages:update 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
   --template showcase --dark-mode true --primary-color "#7d78c6"
 ```
 
-**`entry_methods`** — reachable only via `--data` (max 30 rows, ~64KB body cap on this route only, raised from the shared 10KB to fit it). Six things to know:
+**`entry_methods`** — reachable only via `--data` (max 30 rows, ~64KB body cap on this route only, raised from the shared 10KB to fit it). Seven things to know:
 
-1. **Full-array replace, same as Rule 3 — always `pages:get` → modify → `pages:update`.** There is no per-row patch: `[]` clears every entry method, and omitting the field leaves the stored array untouched. Two row shapes: an **action row** `{id?, actionType, label, points?, config?, requireVerification?}` — `actionType` must be one of the 26 writable types from `actions:catalog` — or a **link row** with no `actionType`: `{id?, label, points?, link, actionsRequired?}` — a plain http(s) button to any URL, for anything the catalog has no action for; `actionsRequired` (0-20, link rows only) hides the row until the entrant has completed that many other actions. Unknown keys (`icon`, `config.type`, the ten legacy `<platform>Config` duplicates) are stripped, not stored, so echoing back a row you just read is always safe. `icon`/`config.type` are always server-derived from `actionType`; whatever you send for them is ignored.
+1. **Full-array replace, same as Rule 3 — always `pages:get` → modify → `pages:update`.** There is no per-row patch: `[]` clears every entry method, and omitting the field leaves the stored array untouched. Two row shapes: an **action row** `{id?, actionType, label, points?, config?, requireVerification?}` — `actionType` must be one of the 28 writable types from `actions:catalog` — or a **link row** with no `actionType`: `{id?, label, points?, link, actionsRequired?}` — a plain http(s) button to any URL, for anything the catalog has no action for; `actionsRequired` (0-20) hides the row until the entrant has completed that many other actions; action rows accept it only for `tokei_cross_promote` and drop it otherwise. Unknown keys (`icon`, `config.type`, the ten legacy `<platform>Config` duplicates) are stripped, not stored, so echoing back a row you just read is always safe. `icon`/`config.type` are always server-derived from `actionType`; whatever you send for them is ignored.
 2. **`points` may not render as sent.** `0` means unset — the renderer falls back to the type's default. Any type with an `entryValueSettingKey` (see `actions:catalog`) has its displayed points overridden by `settings.<type>_entry_value` when the owner has configured one, and Product Hunt (`producthunt_follow`, `producthunt_vote`) and all three Steam types go further — their points are **hard-substituted with the platform default at render**, unconditionally. Also: **`pages:get` already returns the EFFECTIVE points** (overrides applied), not the raw stored value, so an untouched `pages:get` → `pages:update` round-trip silently persists that effective number into storage in place of whatever was originally configured.
-3. **Some types need a deployment prerequisite — warn the human before adding one.** All 5 `twitter_*` types and `linkedin_share`/`linkedin_post` need participant OAuth configured on this deployment; `discord_join` needs Discord OAuth and has no working verification at all, so its points are awarded on trust regardless; all 3 `steam_*` types need Steam login. `actions:catalog`'s `needs` field says this per type — `null` means no prerequisite. Facebook, Instagram, TikTok, Twitch, Product Hunt, `linkedin_follow`, `linkedin_company_follow` and link rows have none — safe to add without asking.
+3. **Some types need a deployment prerequisite — warn the human before adding one.** `linkedin_share`/`linkedin_post` need the `linkedin_oidc` provider enabled on this deployment, and all 3 `steam_*` types need Steam login. `actions:catalog`'s `needs` field says this per type — `null` means no prerequisite. X/Twitter, Discord, Facebook, Instagram, TikTok, Twitch, Product Hunt, `linkedin_follow`, `linkedin_company_follow` and link rows have none — safe to add without asking.
 4. Draft/publish semantics are unchanged by any of this. Unknown keys are stripped on the way in, never stored.
 5. **Link-row rules:** a label that doesn't start with `"Visit Our "` renders as a non-clickable generic row; the clickable, credited path also requires the page to have a `campaign_url` configured.
-6. **Rows of one `actionType` are capped, and can carry a stable `id`.** At most 5 rows may share one `actionType` — but only for `twitter_follow`, `instagram_follow` and `facebook_visit_page`; every other type, including one that reads as duplicate-eligible in `actions:catalog`, is capped at 1. Exceeding it is `422 VALIDATION_ERROR`: `Too many "twitter_follow" entry methods (max 5 per promotion).` for the three types above, `Only one "tiktok_follow" entry method is allowed per promotion.` for everything else. `id` (optional, `[A-Za-z0-9_-]`, max 64 chars) gives a row stable identity across a `pages:get` → modify → `pages:update` round-trip once a page holds several rows of one type — never required, and no pre-existing row has one. Two rows sharing an `id` is also `422`: `Duplicate entry method id "<id>" (already used at index <n>).`
+6. **Rows of one `actionType` are capped, and can carry a stable `id`.** At most 5 rows may share one `actionType` — but only for `twitter_follow`, `instagram_follow` and `facebook_visit_page`; every other type, including one that reads as duplicate-eligible in `actions:catalog`, is capped at 1. Exceeding it is `422 VALIDATION_ERROR`: `Too many "twitter_follow" entry methods (max 5 per promotion).` for the three types above, `Only one "tiktok_follow" entry method is allowed per promotion.` for everything else. `id` (optional, `[A-Za-z0-9_-]`, max 64 chars) gives a row stable identity across a `pages:get` → modify → `pages:update` round-trip. It is optional on input. Every stored row has one, and a row sent without one gets one when it is stored, as a new action. Two rows sharing an `id` is also `422`: `Duplicate entry method id "<id>" (already used at index <n>).`
+7. **Changing a row's target keeps credit while it keeps its `id`; omit the `id` to make it a new action.** Entrants who already completed the row keep their credit and are not paid again. The server records the old target in the row's read-only `previousTargets` and `targetSuffix`, and ignores values you send for them. A row sent without its `id` is stored as a new action, so everyone can complete it again. Confirm with the human before doing that on a live page.
 
 ```sh
 tokei-agent pages:get "$PAGE" | jq '.data.entry_methods'   # always read first (Rule 3)
 
-# Trust-based (no prerequisite) + conditional (needs X/Twitter OAuth — warn the human
-# first) + a link row, sent together as the COMPLETE replacement array
+# Two trust-based rows (no prerequisite) + a link row, sent together as the
+# COMPLETE replacement array
 tokei-agent pages:update "$PAGE" --data '{"entry_methods":[
   {"actionType":"tiktok_follow","label":"Follow us on TikTok","points":3,"config":{"username":"tokei"}},
   {"actionType":"twitter_follow","label":"Follow on X","points":3,"config":{"username":"tokei"}},
@@ -430,7 +432,7 @@ tokei-agent pages:publish 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90 \
   --data '{"end_date":"2026-09-01T00:00:00Z"}'
 ```
 
-**`pages:unpublish <contestId>`** — sugar over `pages:update` that PATCHes `{"status": "draft"}`. Safe for pages with entrants: entries and entrants are left untouched, and it only blocks new signups. **This is the single most important thing to tell your user: a draft page still renders publicly at its URL — unpublishing hides nothing, it only stops new entries.** If they want the page actually gone from public view, unpublishing is not that; there is no way to destroy or hide a page through this API (the `status` field only ever accepts `draft`/`active` — `deleted` is rejected).
+**`pages:unpublish <contestId>`** — sugar over `pages:update` that PATCHes `{"status": "draft"}`. Safe for pages with entrants: entries and entrants are left untouched, and it only blocks new signups. **Unpublishing hides the page:** visitors to its URL see "This promotion isn't open right now" (noindex), and only the owner, signed in to tokei.io, still sees it. `pages:publish` restores it. Nothing is deleted, and there is no way to delete a page through this API (the `status` field only ever accepts `draft`/`active` — `deleted` is rejected).
 
 ```sh
 tokei-agent pages:unpublish 4e7a1c0e-8b2d-4f6a-9c3e-2d5b8a7f1e90
@@ -485,11 +487,11 @@ Write commands accept `--data '<json>'` or `--data @file.json` for the raw reque
 | 409    | `WINNERS_ALREADY_SELECTED` | `pages:update`: `end_date` was set **or cleared** on a page whose winners have already been drawn. | Do not retry. Tell the human the draw is final — they must clear the winner selection in the dashboard first. Other fields still patch fine; just omit `--end-date`. |
 | 413    | `PAYLOAD_TOO_LARGE`   | Body over the 10KB limit (`pages:update` alone is raised to 64KB, to fit a full `entry_methods` array). | Shrink the body. Do not retry as-is.                                                             |
 | 422    | `VALIDATION_ERROR`    | Body failed validation; `error.details` is an array of `{field, message}`. | Fix exactly the listed fields, then retry once.                                                  |
-| 429    | `RATE_LIMIT_EXCEEDED` | Per-minute limit, the 20/day clone cap, or the 50/day media-ticket cap. | Wait `Retry-After` seconds (in the response headers), then retry with exponential backoff. On the two daily caps, trust `Retry-After` — `rate_limit` in the envelope reports the per-minute window, which will still look healthy. |
+| 429    | `RATE_LIMIT_EXCEEDED` | Per-minute limit, the 20/day clone cap, or the 50/day media-upload cap. | Wait `Retry-After` seconds (in the response headers), then retry with exponential backoff. On the two daily caps, trust `Retry-After` — `rate_limit` in the envelope reports the per-minute window, which will still look healthy. |
 | 5xx    | `INTERNAL_ERROR`      | Server fault.                                                           | Retry with exponential backoff, max 2–3 attempts, then report to the human.                      |
 | (none) | `network_error`       | Request never reached the API (DNS, timeout, refused).                  | Retry with backoff a couple of times, then report.                                               |
 
-`media:upload` step 1 (the ticket request) uses the table above as normal — an oversize declared `size_bytes` or a rejected `content_type` comes back as the usual `422 VALIDATION_ERROR`, and the 50/day ticket cap as the usual `429 RATE_LIMIT_EXCEEDED`. Step 2 (the `PUT` of the actual bytes) is **not a Tokei API call** — it hits Supabase Storage directly, so a failure there is a different, `error.code`-less shape: `{"ok": false, "error": {"type": "upload_failed", "stage": "storage_put", "status": <n>, "message": "..."}}`. In practice `status` is `413` — the real file exceeded the 5MB bucket cap despite an honest `size_bytes` declaration (or the declaration undersold it). Do not retry the same ticket; shrink the file and run `media:upload` again from scratch.
+`media:upload` uses the table above as normal — a rejected content type or bytes that don't match it come back as `422 VALIDATION_ERROR` on field `file`, and the 50/day cap as `429 RATE_LIMIT_EXCEEDED`. A file over 4MB or under 100 bytes is refused locally before any request: exit code `2`, `{"ok": false, "error": {"type": "usage_error", "message": "..."}}` on stderr. Shrink or replace the file; retrying as-is cannot succeed. A `410 GONE` means an old CLI (0.3.5 or earlier) that still requests the retired signed-upload ticket — upgrade `tokei-agent`.
 
 ## Self-throttling
 
@@ -501,9 +503,9 @@ Every successful and failed API response includes `rate_limit` in the envelope (
 2. **Trial plan gets `403` on everything** — API access needs an active subscription or a lifetime plan. Run `me` first (Rule 1) so this surfaces once, not on every command.
 3. **Read-only key gets `403` on writes, and nothing tells you in advance** — `me` doesn't report scope. If the task changes anything, confirm the key is read+write with the human before starting.
 4. **Media must go through `media:upload` first (Rule 2)** — raw filenames and external URLs are rejected by the host allowlist on all seven media fields. No exceptions, not even for a quick test.
-5. **5MB applies to video too**, and the 50/day media cap **counts tickets issued, not uploads** — never call `media:upload` speculatively in a loop.
+5. **4MB applies to video too**, and every upload that passes validation counts toward the 50/day media cap — never call `media:upload` speculatively in a loop.
 6. **`prizes` and `reward_thresholds` replace the whole list (Rule 3)** — `pages:get` first or you will silently delete the other entries.
-7. **A draft page still renders publicly at its URL** — `pages:unpublish` blocks new signups, it does not hide anything. Say this out loud to the user; they will assume otherwise.
+7. **`pages:unpublish` hides the page from everyone but the owner** — visitors see "This promotion isn't open right now" and cannot join. Confirm with the user before unpublishing a page that has live traffic.
 8. **Publishing needs a future `end_date`** — otherwise `422` on field `status`. Set it in the same call: `pages:publish <id> --data '{"end_date":"..."}'`.
 9. **Clearing `end_date` needs `status: draft` in the same body**, and is refused outright with `409 WINNERS_ALREADY_SELECTED` once winners are drawn.
 10. **Appearance values don't always read back as written** — `--card-width wide` reads back as `max-w-4xl`. That's correct, not a failed write.
@@ -537,7 +539,7 @@ tokei-agent events:catalog
 # Create (write key)
 tokei-agent pages:clone --title "T" --template <slug>          # 20/day cap
 tokei-agent pages:clone --title "T" --source <promotionId>     # or clone your own
-tokei-agent media:upload ./hero.png                            # ≤5MB, 50 tickets/day
+tokei-agent media:upload ./hero.png                            # ≤4MB, 50 uploads/day
 
 # Update (write key) — read back with pages:get to confirm
 tokei-agent pages:update <id> --title "T" --description "<p>D</p>"
@@ -551,7 +553,7 @@ tokei-agent pages:update <id> --data '{"entry_methods":[...]}' # replaces the li
 
 # Publish state (write key)
 tokei-agent pages:publish <id> --data '{"end_date":"2026-09-01T00:00:00Z"}'
-tokei-agent pages:unpublish <id>                               # still renders publicly!
+tokei-agent pages:unpublish <id>                               # hides the page from visitors
 
 # Signups + webhooks (write key)
 tokei-agent entries:create <id> --email a@b.com --name "Ada" --points 10

@@ -10,7 +10,7 @@ import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.6";
+export const VERSION = "0.3.7";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -26,7 +26,7 @@ export interface Io {
   // embedders without a filesystem can omit it (the command then reports a
   // usage error) — same idiom as readFile.
   readFileBytes?: (path: string) => Uint8Array;
-  // Raw-bytes PUT used by `media:upload`'s step 2 (signed-URL upload).
+  // Binary-body fetch used by `media:upload`'s multipart POST.
   // Optional so embedders without network access for binary bodies can omit
   // it (the command then reports a usage error) — same idiom as readFile.
   binaryFetchImpl?: BinaryFetchLike;
@@ -202,8 +202,8 @@ const COMMANDS: Record<string, CommandSpec> = {
           "max-w-7xl",
         ],
       },
-      // Media (S2.5): public_url values from media:upload. See media:upload's
-      // help entry for the two-step flow that produces them.
+      // Media (S2.5): public_url values from media:upload, which POSTs the file
+      // to /api/v1/media as multipart/form-data.
       { name: "image-video", field: "image_video", kind: "string" },
       { name: "secondary-image", field: "secondary_image", kind: "string" },
       { name: "third-image", field: "third_image", kind: "string" },
@@ -278,9 +278,9 @@ const COMMANDS: Record<string, CommandSpec> = {
 // `/contests` path and `contestId` positional are the wire format, and --mode
 // also accepts sharing_only/gamification, which are not contests.
 //
-// One step per real request: the CLI issues exactly one HTTP call per command
-// (media:upload is the sole two-phase flow), so there is never more than one
-// tick to show. Anything more would be invented progress.
+// One step per real request: the CLI issues exactly one HTTP call per command,
+// media:upload included, so there is never more than one tick to show.
+// Anything more would be invented progress.
 interface CommandCopy {
   pending: string;
   done: string | ((payload: unknown) => string);
@@ -576,7 +576,7 @@ Commands (write — need a read+write API key):
                                 --status draft|active  --idempotency-key <k>  --data
   media:upload <file>         Upload an image or video (one multipart POST) and
                               print a public_url to feed into pages:update's
-                              media flags below. ≤5MB per file — the cap applies
+                              media flags below. ≤4MB per file — the cap applies
                               to video too, not just images.
                               Content type is inferred from the extension
                               (.jpg/.jpeg/.png/.gif/.webp/.mp4/.webm/.mov);
@@ -616,8 +616,8 @@ Commands (write — need a read+write API key):
                               in --data, e.g. --data '{"end_date":"..."}'
                               to publish and set the deadline in one call.
   pages:unpublish <contestId> Unpublish a page (status -> draft). Entries are
-                              untouched and new ones are blocked, but the
-                              page still renders publicly at its URL.
+                              untouched, new ones are blocked, and visitors
+                              see a "not open right now" page.
   entries:create <contestId>  Add an entry
                                 --email <addr> (required)  --name <n>
                                 --action-type <t>  --points <n>  --value <v>  --data

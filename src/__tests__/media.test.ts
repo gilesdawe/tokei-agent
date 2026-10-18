@@ -160,12 +160,12 @@ describe("main — media:upload", () => {
     expect(h.uploadCalls).toEqual([]);
   });
 
-  it("file over 5MB -> usage error mentioning 5MB, zero HTTP calls", async () => {
+  it("file over 4MB -> usage error mentioning 4MB, zero HTTP calls", async () => {
     const bytes = new Uint8Array(6 * 1024 * 1024);
     const h = harness({ files: { "big.png": bytes } });
     const code = await main(["media:upload", "big.png"], h.io);
     expect(code).toBe(2);
-    expect(JSON.parse(h.err[0]).error.message).toMatch(/5MB/);
+    expect(JSON.parse(h.err[0]).error.message).toMatch(/4MB/);
     expect(h.jsonCalls).toEqual([]);
     expect(h.uploadCalls).toEqual([]);
   });
@@ -230,7 +230,7 @@ describe("main — media:upload", () => {
   it("413 from the API -> exit 1, reported like any other API error", async () => {
     const errBody = {
       success: false,
-      error: { code: "PAYLOAD_TOO_LARGE", message: "File exceeds the 5MB limit.", status: 413 },
+      error: { code: "PAYLOAD_TOO_LARGE", message: "File exceeds the 4MB limit.", status: 413 },
     };
     const h = harness({
       files: { "hero.png": new Uint8Array(150).fill(1) },
@@ -240,7 +240,7 @@ describe("main — media:upload", () => {
     expect(code).toBe(1);
     const stdout = JSON.parse(h.out[0]);
     expect(stdout.error.code).toBe("PAYLOAD_TOO_LARGE");
-    expect(stdout.error.message).toMatch(/5MB/);
+    expect(stdout.error.message).toMatch(/4MB/);
   });
 
   it("a non-JSON error body still exits 1 with a readable envelope", async () => {

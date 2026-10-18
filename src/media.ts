@@ -18,7 +18,7 @@ import { requestMultipart } from "./http.js";
 import type { BinaryFetchLike } from "./http.js";
 
 /**
- * Client-side mirror of CONTENT_TYPE_TO_EXT in src/lib/api/media-upload.ts
+ * Client-side mirror of CONTENT_TYPE_TO_EXT in src/features/public-api/model/media-upload.ts
  * (server), inverted (extension -> content type) and lowercased for lookup.
  * The CLI cannot import app code (separate package, separate build target),
  * so this is duplicated by necessity — keep the two in sync by hand if the
@@ -39,8 +39,8 @@ export const EXT_TO_CONTENT_TYPE: Record<string, string> = {
 
 const SUPPORTED_EXTENSIONS = Object.keys(EXT_TO_CONTENT_TYPE).join(", ");
 
-/** Matches MEDIA_MAX_BYTES / the file-utils min-size check (src/lib/file-utils.ts) server-side. */
-export const MEDIA_MAX_BYTES = 5 * 1024 * 1024;
+/** Matches MEDIA_MAX_BYTES / the file-utils min-size check (src/features/media/model/file-utils.ts) server-side. */
+export const MEDIA_MAX_BYTES = 4 * 1024 * 1024;
 export const MEDIA_MIN_BYTES = 100;
 
 export function contentTypeForPath(path: string): string | undefined {
@@ -108,7 +108,7 @@ export async function uploadMedia(args: UploadMediaArgs): Promise<UploadMediaOut
   if (bytes.length > MEDIA_MAX_BYTES) {
     return {
       kind: "usage_error",
-      message: `${filePath} is ${bytes.length} bytes, over the 5MB (${MEDIA_MAX_BYTES} byte) upload limit — this applies to video as well as images.`,
+      message: `${filePath} is ${bytes.length} bytes, over the 4MB (${MEDIA_MAX_BYTES} byte) upload limit — this applies to video as well as images.`,
     };
   }
   if (bytes.length < MEDIA_MIN_BYTES) {
