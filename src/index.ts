@@ -3,14 +3,17 @@
 
 import { parseArgs } from "./args.js";
 import { request } from "./http.js";
-import type { BinaryFetchLike, FetchLike, HttpMethod } from "./http.js";
+import type { BinaryFetchLike, FetchLike } from "./http.js";
 import { createMcpSession } from "./mcp.js";
 import { uploadMedia } from "./media.js";
+import { hasOneTimeSecret, readManifest, resolvePath } from "./tool-dispatch.js";
+import type { CliSpec, ToolSpec } from "./tool-dispatch.js";
+import manifest from "./tool-manifest.json" with { type: "json" };
 import { createTerm, failureMessage, formatCount, renderBanner } from "./ui.js";
 import type { SummaryRow, Term, TermHost } from "./ui.js";
 
 // Kept in sync with cli/package.json by hand (zero-dep simplicity).
-export const VERSION = "0.3.7";
+export const VERSION = "0.3.8";
 
 const DEFAULT_BASE_URL = "https://tokei.io";
 
@@ -58,221 +61,89 @@ interface BodyFlagSpec {
   required?: boolean;
 }
 
+// One CLI command, derived from its tool-manifest.json entry. Request shape
+// (method, path, fixedBody, warnSecretOnce) is read from `tool`.
+//
+// Every tool with a body also accepts --data '<json>' / --data @file.json,
+// merged under individual body flags (flags win). It is passed to the API
+// untouched: the API's 422 per-field errors are the validation story, and
+// unlike MCP arguments it is not filtered against inputSchema.
 interface CommandSpec {
-  method?: HttpMethod; // default GET
-  // Name of the required positional path parameter, e.g. "contestId".
-  positional?: string;
-  buildPath: (positional: string | undefined) => string;
+  tool: ToolSpec;
   flags: FlagSpec[];
-  bodyFlags?: BodyFlagSpec[];
-  // Accepts --data '<json>' / --data @file.json, merged under individual
-  // body flags (flags win). Passed to the API untouched — its 422
-  // per-field errors are the validation story.
-  acceptsData?: boolean;
-  // A fixed set of body fields sent on every invocation (e.g. the sugar
-  // commands pages:publish/pages:unpublish send {status: "active"/"draft"}).
-  // Lowest precedence: --data is merged on top of it, and individual body
-  // flags win over both.
-  fixedBody?: Record<string, unknown>;
-  // Usage error when the merged body has no fields (PATCH needs >= 1).
-  requireBody?: boolean;
-  // Warn on stderr that the returned signing secret is shown only once.
-  warnSecretOnce?: boolean;
+  bodyFlags: BodyFlagSpec[];
 }
 
-const PAGE: FlagSpec = { name: "page", param: "page", kind: "int", min: 1 };
-const PER_PAGE: FlagSpec = { name: "per-page", param: "per_page", kind: "int", min: 1, max: 100 };
+// The subset of JSON Schema the manifest's input properties use.
+interface PropSchema {
+  type?: string | string[];
+  enum?: string[];
+  minimum?: number;
+  maximum?: number;
+}
 
-// Every path parameter is percent-encoded so ids can never break out of
-// their path segment.
-const enc = encodeURIComponent;
+function propSchema(tool: ToolSpec, name: string): PropSchema {
+  const schema = tool.def.inputSchema.properties[name];
+  if (schema === undefined) {
+    throw new Error(`tool-manifest.json: ${tool.def.name} declares no "${name}" property`);
+  }
+  return schema as PropSchema;
+}
 
-const COMMANDS: Record<string, CommandSpec> = {
-  me: {
-    buildPath: () => "/me",
-    flags: [],
-  },
-  "pages:list": {
-    buildPath: () => "/contests",
-    flags: [
-      {
-        name: "status",
-        param: "status",
-        kind: "enum",
-        values: ["draft", "active", "completed", "deleted"],
-      },
-      { name: "mode", param: "mode", kind: "enum", values: ["competition", "gamification", "sharing_only"] },
-      PAGE,
-      PER_PAGE,
-    ],
-  },
-  "pages:get": {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}`,
-    flags: [],
-  },
-  stats: {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/analytics`,
-    flags: [],
-  },
-  leaderboard: {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/leaderboard`,
-    flags: [PAGE, PER_PAGE],
-  },
-  "referrals:top": {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/referrals`,
-    flags: [PAGE, PER_PAGE],
-  },
-  "winners:list": {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/winners`,
-    flags: [],
-  },
-  "entries:list": {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/entries`,
-    flags: [PAGE, PER_PAGE, { name: "email", param: "email", kind: "string" }],
-  },
-  "surveys:list": {
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/survey-responses`,
-    flags: [PAGE, PER_PAGE],
-  },
-  "templates:list": {
-    buildPath: () => "/templates",
-    flags: [],
-  },
-  "actions:catalog": {
-    buildPath: () => "/actions/catalog",
-    flags: [{ name: "type", param: "type", kind: "string" }],
-  },
-  "events:catalog": {
-    buildPath: () => "/events/catalog",
-    flags: [{ name: "type", param: "type", kind: "string" }],
-  },
-  "pages:clone": {
-    method: "POST",
-    buildPath: () => "/promotions",
-    flags: [],
-    bodyFlags: [
-      { name: "title", field: "title", kind: "string", required: true },
-      { name: "source", field: "source_promotion_id", kind: "string" },
-      { name: "template", field: "template", kind: "string" },
-      { name: "description", field: "description", kind: "string" },
-      { name: "prize", field: "prize", kind: "string" },
-      { name: "end-date", field: "end_date", kind: "string" },
-      { name: "campaign-url", field: "campaign_url", kind: "string" },
-      { name: "image-url", field: "image_url", kind: "string" },
-      { name: "status", field: "status", kind: "enum", values: ["draft", "active"] },
-      { name: "idempotency-key", field: "idempotency_key", kind: "string" },
-    ],
-    acceptsData: true,
-  },
-  "pages:update": {
-    method: "PATCH",
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}`,
-    flags: [],
-    bodyFlags: [
-      { name: "title", field: "title", kind: "string" },
-      { name: "description", field: "description", kind: "string" },
-      { name: "start-date", field: "start_date", kind: "string" },
-      { name: "end-date", field: "end_date", kind: "string" },
-      // "simple" is the Custom template (creator-styled via custom_css) — launched 2026-08-10.
-      { name: "template", field: "template", kind: "enum", values: ["basic-new", "showcase", "future", "simple"] },
-      // Creator CSS for the Custom template (hosted page + widget). Max 20 KB, server-sanitised.
-      { name: "custom-css", field: "custom_css", kind: "string" },
-      { name: "dark-mode", field: "dark_mode_enabled", kind: "bool" },
-      { name: "primary-color", field: "primary_color", kind: "string" },
-      {
-        name: "card-width",
-        field: "card_width",
-        kind: "enum",
-        values: [
-          "narrow",
-          "medium",
-          "wide",
-          "xl",
-          "max-w-2xl",
-          "max-w-3xl",
-          "max-w-4xl",
-          "max-w-7xl",
-        ],
-      },
-      // Media (S2.5): public_url values from media:upload, which POSTs the file
-      // to /api/v1/media as multipart/form-data.
-      { name: "image-video", field: "image_video", kind: "string" },
-      { name: "secondary-image", field: "secondary_image", kind: "string" },
-      { name: "third-image", field: "third_image", kind: "string" },
-      { name: "fourth-image", field: "fourth_image", kind: "string" },
-      { name: "fifth-image", field: "fifth_image", kind: "string" },
-      { name: "background-image", field: "background_image", kind: "string" },
-      { name: "og-image", field: "og_image", kind: "string" },
-    ],
-    acceptsData: true,
-    requireBody: true,
-  },
-  "pages:publish": {
-    method: "PATCH",
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}`,
-    flags: [],
-    fixedBody: { status: "active" },
-    acceptsData: true,
-    requireBody: true,
-  },
-  "pages:unpublish": {
-    method: "PATCH",
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}`,
-    flags: [],
-    fixedBody: { status: "draft" },
-    acceptsData: true,
-    requireBody: true,
-  },
-  "entries:create": {
-    method: "POST",
-    positional: "contestId",
-    buildPath: (id) => `/contests/${enc(id!)}/entries`,
-    flags: [],
-    bodyFlags: [
-      { name: "email", field: "email", kind: "string", required: true },
-      { name: "name", field: "name", kind: "string" },
-      { name: "action-type", field: "action_type", kind: "string" },
-      { name: "points", field: "points", kind: "int" },
-      { name: "value", field: "value", kind: "string" },
-    ],
-    acceptsData: true,
-  },
-  "webhooks:list": {
-    buildPath: () => "/webhooks",
-    flags: [PAGE, PER_PAGE],
-  },
-  "webhooks:create": {
-    method: "POST",
-    buildPath: () => "/webhooks",
-    flags: [],
-    bodyFlags: [
-      { name: "url", field: "url", kind: "string", required: true },
-      { name: "events", field: "events", kind: "list", required: true },
-    ],
-    acceptsData: true,
-    warnSecretOnce: true,
-  },
-  "webhooks:delete": {
-    method: "DELETE",
-    positional: "webhookId",
-    buildPath: (id) => `/webhooks/${enc(id!)}`,
-    flags: [],
-  },
-};
+function flagName(cli: CliSpec, field: string): string {
+  return cli.flagNames?.[field] ?? field.replace(/_/g, "-");
+}
+
+// Query flags validate against the schema's enum and integer bounds.
+function queryFlag(tool: ToolSpec, cli: CliSpec, param: string): FlagSpec {
+  const schema = propSchema(tool, param);
+  const name = flagName(cli, param);
+  if (schema.enum) return { name, param, kind: "enum", values: schema.enum };
+  if (schema.type === "integer") {
+    return { name, param, kind: "int", min: schema.minimum, max: schema.maximum };
+  }
+  return { name, param, kind: "string" };
+}
+
+// Body flags check form only (enum membership, digits, true/false). Integer
+// bounds are left to the API's 422.
+function bodyFlag(tool: ToolSpec, cli: CliSpec, field: string): BodyFlagSpec {
+  const schema = propSchema(tool, field);
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  const kind: BodyFlagSpec["kind"] = schema.enum
+    ? "enum"
+    : type === "boolean"
+      ? "bool"
+      : type === "integer"
+        ? "int"
+        : type === "array"
+          ? "list"
+          : "string";
+  return {
+    name: flagName(cli, field),
+    field,
+    kind,
+    values: schema.enum,
+    required: tool.def.inputSchema.required?.includes(field) ?? false,
+  };
+}
+
+// A Map, so a command named after an Object.prototype member ("toString")
+// is an unknown command rather than a crash.
+const COMMANDS = new Map<string, CommandSpec>();
+for (const tool of readManifest(manifest)) {
+  const cli = tool.cli;
+  if (!cli) continue;
+  COMMANDS.set(cli.command, {
+    tool,
+    flags: (tool.queryParams ?? []).map((param) => queryFlag(tool, cli, param)),
+    bodyFlags: (cli.bodyFlags ?? []).map((field) => bodyFlag(tool, cli, field)),
+  });
+}
 
 // ---------------------------------------------------------------------------
-// Presentation only. Kept out of COMMANDS so the API spec table stays a pure
-// description of the wire protocol.
+// Presentation only. Kept out of tool-manifest.json, which describes the wire
+// protocol and the tools.
 //
 // Copy uses "page", matching README.md and the pages:* command names — the
 // `/contests` path and `contestId` positional are the wire format, and --mode
@@ -387,14 +258,14 @@ function renderAccountSummary(term: Term, payload: unknown): void {
   });
 }
 
-const COMMAND_NAMES = Object.keys(COMMANDS);
+const COMMAND_NAMES = [...COMMANDS.keys()];
 
 class UsageError extends Error {}
 
 function checkKnownFlags(spec: CommandSpec, flags: Record<string, string>): void {
   const known = new Set(spec.flags.map((f) => f.name));
-  for (const bf of spec.bodyFlags ?? []) known.add(bf.name);
-  if (spec.acceptsData) known.add("data");
+  for (const bf of spec.bodyFlags) known.add(bf.name);
+  if (spec.tool.hasBody) known.add("data");
   for (const provided of Object.keys(flags)) {
     if (!known.has(provided)) {
       throw new UsageError(`Unknown flag --${provided} for this command`);
@@ -469,16 +340,17 @@ function buildBody(
   flags: Record<string, string>,
   io: Io,
 ): Record<string, unknown> | undefined {
-  if (!spec.bodyFlags && !spec.acceptsData && !spec.fixedBody) return undefined;
+  const { tool } = spec;
+  if (!tool.hasBody) return undefined;
 
   // fixedBody is the base layer; --data is merged on top of it (and wins on
   // conflict); individual flags are applied last and win over both.
-  const body: Record<string, unknown> = { ...(spec.fixedBody ?? {}) };
-  if (spec.acceptsData && flags.data !== undefined) {
+  const body: Record<string, unknown> = { ...(tool.fixedBody ?? {}) };
+  if (flags.data !== undefined) {
     Object.assign(body, parseDataFlag(flags.data, io));
   }
 
-  for (const bf of spec.bodyFlags ?? []) {
+  for (const bf of spec.bodyFlags) {
     const raw = flags[bf.name];
     if (raw === undefined) continue;
     if (raw === "") {
@@ -513,12 +385,12 @@ function buildBody(
     }
   }
 
-  for (const bf of spec.bodyFlags ?? []) {
+  for (const bf of spec.bodyFlags) {
     if (bf.required && body[bf.field] === undefined) {
       throw new UsageError(`--${bf.name} is required (or provide "${bf.field}" via --data)`);
     }
   }
-  if (spec.requireBody && Object.keys(body).length === 0) {
+  if (tool.cli?.requireBody && Object.keys(body).length === 0) {
     throw new UsageError("Provide at least one field to update, via flags or --data");
   }
   return body;
@@ -692,9 +564,8 @@ export async function main(argv: string[], io: Io): Promise<number> {
   }
 
   // media:upload sends file bytes as multipart/form-data rather than a JSON
-  // body, so it doesn't fit the CommandSpec shape and is handled here, ahead
-  // of the COMMANDS table lookup. (It was a two-call ticket flow until the R2
-  // cutover; it is one POST now, but it still doesn't fit CommandSpec.)
+  // body, so its manifest entry has a handler and no `cli` section, and the
+  // command is handled here, ahead of the COMMANDS lookup.
   if (command === "media:upload") {
     const filePath = positionals[0];
     if (filePath === undefined) {
@@ -729,16 +600,17 @@ export async function main(argv: string[], io: Io): Promise<number> {
     return outcome.exitCode;
   }
 
-  const spec = COMMANDS[command];
+  const spec = COMMANDS.get(command);
   if (!spec) {
     return usageError(io, `Unknown command "${command}". Valid commands: ${COMMAND_NAMES.join(", ")}`);
   }
 
   let positional: string | undefined;
-  if (spec.positional) {
+  const positionalName = spec.tool.cli?.positional;
+  if (positionalName) {
     positional = positionals[0];
     if (positional === undefined) {
-      return usageError(io, `${command} requires a <${spec.positional}> argument`);
+      return usageError(io, `${command} requires a <${positionalName}> argument`);
     }
   }
 
@@ -769,7 +641,14 @@ export async function main(argv: string[], io: Io): Promise<number> {
   term?.start(copy!.pending, { logo: command === "me" });
 
   const { payload, exitCode, status } = await request(
-    { baseUrl, apiKey, path: spec.buildPath(positional), query, method: spec.method, body },
+    {
+      baseUrl,
+      apiKey,
+      path: resolvePath(spec.tool, positional),
+      query,
+      method: spec.tool.method,
+      body,
+    },
     io.fetchImpl,
   );
 
@@ -792,15 +671,10 @@ export async function main(argv: string[], io: Io): Promise<number> {
     io.stdout(JSON.stringify(payload, null, 2));
   }
 
-  if (spec.warnSecretOnce && exitCode === 0) {
-    const data = (payload as { data?: unknown }).data;
-    const secret =
-      data !== null && typeof data === "object" ? (data as { secret?: unknown }).secret : undefined;
-    if (typeof secret === "string" && secret.startsWith("whsec_")) {
-      io.stderr(
-        "Warning: the whsec_ signing secret in this response is shown only once and cannot be retrieved again. Store it securely now.",
-      );
-    }
+  if (spec.tool.warnSecretOnce && exitCode === 0 && hasOneTimeSecret(payload)) {
+    io.stderr(
+      "Warning: the whsec_ signing secret in this response is shown only once and cannot be retrieved again. Store it securely now.",
+    );
   }
 
   return exitCode;

@@ -17,7 +17,7 @@ npm install -g tokei-agent
 npx tokei-agent --help
 ```
 
-Requires Node 22+. npm release: https://www.npmjs.com/package/tokei-agent — official website: https://tokei.io — agent docs: https://tokei.io/agent — API reference: https://tokei.io/docs/api
+Requires Node 22.12+. npm release: https://www.npmjs.com/package/tokei-agent — official website: https://tokei.io — agent docs: https://tokei.io/agent — API reference: https://tokei.io/docs/api
 
 ---
 

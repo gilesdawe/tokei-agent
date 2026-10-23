@@ -6,7 +6,8 @@
     "strict": true,
     "outDir": "dist",
     "rootDir": "src",
-    "declaration": true
+    "declaration": true,
+    "resolveJsonModule": true
   },
   "include": ["src"],
   "exclude": ["src/__tests__"]

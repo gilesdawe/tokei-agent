@@ -10,7 +10,7 @@ npm install -g tokei-agent
 npx tokei-agent --help
 ```
 
-Requires Node 22+.
+Requires Node 22.12+.
 
 ### Claude Code
 

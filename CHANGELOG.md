@@ -13,7 +13,26 @@ has so far.
 
 ## [Unreleased]
 
-## [0.3.7] — 2026-10-14
+## [0.3.8] — 2026-10-23
+
+### Changed
+
+- Internal: MCP tools and CLI commands now come from one registry,
+  `src/tool-manifest.json`, with request mapping in `src/tool-dispatch.ts`.
+  Command arguments, output, exit codes, help text and the MCP tool list are
+  unchanged.
+
+- `engines.node` is now `>=22.12`. Node 22.0–22.11 printed an `ExperimentalWarning`
+  about JSON modules on stderr on every run, because the CLI now imports
+  `tool-manifest.json`. Output and MCP traffic were unaffected.
+
+### Fixed
+
+- A command named after a built-in object property (`tokei-agent toString`,
+  `constructor`, `__proto__`) crashed with an `internal_error` and exit 1. It is
+  now an unknown-command usage error, exit 2.
+
+## [0.3.7] — 2026-10-18
 
 ### Changed
 
@@ -284,7 +303,8 @@ the 0.3.6 tarball on npm carries no entry for itself.
   auth, JSON-only stdout with a top-level `rate_limit` object, zero runtime
   dependencies.
 
-[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.7...HEAD
+[unreleased]: https://github.com/gilesdawe/tokei-agent/compare/v0.3.8...HEAD
+[0.3.8]: https://www.npmjs.com/package/tokei-agent/v/0.3.8
 [0.3.7]: https://www.npmjs.com/package/tokei-agent/v/0.3.7
 [0.3.6]: https://www.npmjs.com/package/tokei-agent/v/0.3.6
 [0.3.5]: https://www.npmjs.com/package/tokei-agent/v/0.3.5
